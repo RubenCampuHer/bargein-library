@@ -1,239 +1,168 @@
 package com.aima.bargein.audio
 
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioTrack
+import android.media.*
 import kotlinx.coroutines.*
 import timber.log.Timber
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicBoolean
 
 class AudioPlayback(
-    private val onPlaybackComplete: () -> Unit = {},
-    private val onPlaybackStopped: () -> Unit = {}
+    private val onPlaybackComplete: (() -> Unit)? = null,
+    private val onPlaybackStopped: (() -> Unit)? = null,
+    private val onPlaybackBuffer: ((ShortArray) -> Unit)? = null // 🧠 NUEVO: callback far-end
 ) {
+    @Volatile
     private var audioTrack: AudioTrack? = null
     private var playbackJob: Job? = null
-    private val playbackScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val stopRequested = AtomicBoolean(false)
 
-    @Volatile
-    private var isPlaying = false
+    private data class WavHeader(
+        val sampleRate: Int,
+        val channels: Int
+    )
 
-    @Volatile
-    private var stopRequested = false
+    private fun parseHeader(input: InputStream): WavHeader {
+        val header = ByteArray(44)
+        val read = input.read(header)
+        if (read < 44) throw IllegalArgumentException("Invalid WAV header")
 
-    companion object {
-        private const val SAMPLE_RATE = 16000
+        val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.position(22)
+        val channels = buffer.short.toInt()
+        val sampleRate = buffer.int
+        return WavHeader(sampleRate, channels)
     }
 
-    fun playWav(inputStream: InputStream) {
-        if (isPlaying) {
-            Timber.w("⚠️ Playback already active, stopping previous")
-            stopImmediately()
-        }
+    fun playWav(stream: InputStream) {
+        stopRequested.set(false)
 
-        stopRequested = false
-        isPlaying = true
-
-        playbackJob = playbackScope.launch {
+        playbackJob = CoroutineScope(Dispatchers.IO).launch {
             try {
-                Timber.i("🎵 Starting playback...")
-
-                val header = ByteArray(44)
-                inputStream.read(header)
-
-                val wavHeader = parseWavHeader(header)
-                Timber.d("WAV: rate=${wavHeader.sampleRate}, channels=${wavHeader.numChannels}")
-
+                val header = parseHeader(stream)
                 val bufferSize = AudioTrack.getMinBufferSize(
-                    wavHeader.sampleRate,
-                    if (wavHeader.numChannels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO,
+                    header.sampleRate,
+                    if (header.channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO,
                     AudioFormat.ENCODING_PCM_16BIT
                 ).coerceAtLeast(4096)
 
-                val audioAttributes = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
+                val track = AudioTrack(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build(),
+                    AudioFormat.Builder()
+                        .setSampleRate(header.sampleRate)
+                        .setChannelMask(
+                            if (header.channels == 1)
+                                AudioFormat.CHANNEL_OUT_MONO
+                            else
+                                AudioFormat.CHANNEL_OUT_STEREO
+                        )
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .build(),
+                    bufferSize,
+                    AudioTrack.MODE_STREAM,
+                    AudioManager.AUDIO_SESSION_ID_GENERATE
+                )
 
-                val audioFormat = AudioFormat.Builder()
-                    .setSampleRate(wavHeader.sampleRate)
-                    .setChannelMask(if (wavHeader.numChannels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .build()
+                audioTrack = track
+                track.play()
+                Timber.i("▶️ Playback STARTED (rate=${header.sampleRate}, ch=${header.channels})")
 
-                audioTrack = AudioTrack.Builder()
-                    .setAudioAttributes(audioAttributes)
-                    .setAudioFormat(audioFormat)
-                    .setBufferSizeInBytes(bufferSize)
-                    .setTransferMode(AudioTrack.MODE_STREAM)
-                    .build()
+                val buffer = ByteArray(bufferSize)
+                var bytesRead = stream.read(buffer)
 
-                audioTrack?.play()
-                Timber.i("▶️ Playback STARTED")
+                while (!stopRequested.get() && bytesRead > 0) {
+                    // Convertir a ShortArray para callback VAD
+                    val shortBuffer = ShortArray(bytesRead / 2)
+                    ByteBuffer.wrap(buffer, 0, bytesRead)
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                        .asShortBuffer()
+                        .get(shortBuffer)
 
-                val buffer = ByteArray(4096)
-                var bytesRead: Int
-                var wasStopped = false
+                    // 🔊 Enviar al altavoz
+                    val written = track.write(shortBuffer, 0, shortBuffer.size)
+                    if (written <= 0 || stopRequested.get()) break
 
-                while (isActive && !stopRequested) {
-                    bytesRead = inputStream.read(buffer)
+                    // 🧠 Enviar al VAD la referencia far-end
+                    onPlaybackBuffer?.invoke(shortBuffer)
 
-                    if (bytesRead <= 0) {
-                        Timber.d("📭 End of stream reached")
-                        break
-                    }
-
-                    if (stopRequested) {
-                        Timber.i("⏸️ Stop requested during playback")
-                        wasStopped = true
-                        break
-                    }
-
-                    audioTrack?.write(buffer, 0, bytesRead)
+                    bytesRead = stream.read(buffer)
                 }
 
-                // Cleanup
-                try {
-                    audioTrack?.stop()
-                    audioTrack?.release()
-                    audioTrack = null
-                } catch (e: Exception) {
-                    Timber.e(e, "Error stopping AudioTrack")
-                }
-
-                isPlaying = false
-                inputStream.close()
-
-                withContext(Dispatchers.Main) {
-                    if (wasStopped) {
-                        Timber.i("🛑 Playback STOPPED by barge-in")
-                        onPlaybackStopped()
-                    } else {
-                        Timber.i("✅ Playback COMPLETED normally")
-                        onPlaybackComplete()
-                    }
+                if (stopRequested.get()) {
+                    Timber.w("🛑 Playback interrupted")
+                    onPlaybackStopped?.invoke()
+                } else {
+                    Timber.i("✅ Playback COMPLETED normally")
+                    onPlaybackComplete?.invoke()
                 }
 
             } catch (e: Exception) {
-                Timber.e(e, "❌ Error during playback")
+                Timber.e(e, "Playback error")
+            } finally {
                 cleanup()
             }
         }
     }
 
+    /**
+     * Parada inmediata del audio.
+     */
     fun stopImmediately(): Long {
-        val stopTime = System.currentTimeMillis()
+        val timestamp = System.currentTimeMillis()
+        stopRequested.set(true)
+        Timber.i("🧨 Forcing AudioTrack stop...")
 
-        if (!isPlaying && audioTrack == null) {
-            Timber.w("⚠️ No active playback to stop")
-            return 0
-        }
-
-        Timber.i("⏸️ STOPPING PLAYBACK IMMEDIATELY")
-
-        stopRequested = true
-
-        // Detener AudioTrack INMEDIATAMENTE
-        try {
-            audioTrack?.apply {
-                when (playState) {
-                    AudioTrack.PLAYSTATE_PLAYING -> {
-                        pause()
-                        flush()
-                        Timber.d("✅ AudioTrack paused and flushed")
-                    }
-                    AudioTrack.PLAYSTATE_PAUSED -> {
-                        flush()
-                        Timber.d("✅ AudioTrack flushed (was paused)")
-                    }
-                    else -> {
-                        Timber.d("ℹ️ AudioTrack state: $playState")
+        GlobalScope.launch(Dispatchers.Default) {
+            try {
+                audioTrack?.let { track ->
+                    try {
+                        if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                            track.pause()
+                            track.flush()
+                            track.stop()
+                        }
+                    } catch (e: Exception) {
+                        Timber.w(e, "AudioTrack stop exception")
+                    } finally {
+                        try {
+                            track.release()
+                            Timber.i("✅ AudioTrack released forcibly")
+                        } catch (e: Exception) {
+                            Timber.w(e, "release() failed")
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                Timber.e(e, "Error during forced stop")
             }
-        } catch (e: Exception) {
-            Timber.e(e, "❌ Error stopping AudioTrack")
         }
 
-        // Cancelar job
-        playbackJob?.cancel()
+        playbackJob?.cancel("forced stop")
+        playbackJob = null
+        audioTrack = null
 
-        isPlaying = false
-
-        Timber.i("✅ Playback stopped at ${stopTime}ms")
-        return stopTime
+        Timber.i("✅ stopImmediately finished at ${timestamp}ms")
+        return timestamp
     }
-
-    fun isPlaying(): Boolean = isPlaying
 
     private fun cleanup() {
         try {
             audioTrack?.apply {
-                if (playState == AudioTrack.PLAYSTATE_PLAYING) {
-                    stop()
-                }
+                if (playState != AudioTrack.PLAYSTATE_STOPPED) stop()
                 release()
             }
-            audioTrack = null
         } catch (e: Exception) {
-            Timber.e(e, "Error in cleanup")
+            Timber.w(e, "cleanup() error")
+        } finally {
+            audioTrack = null
         }
-        isPlaying = false
     }
 
     fun release() {
-        Timber.d("🔧 Releasing AudioPlayback")
         stopImmediately()
-
-        runBlocking {
-            playbackJob?.cancelAndJoin()
-        }
-
-        playbackScope.cancel()
-        cleanup()
-
-        Timber.d("✅ AudioPlayback released")
-    }
-
-    private data class WavHeader(
-        val sampleRate: Int,
-        val numChannels: Int,
-        val bitsPerSample: Int
-    )
-
-    private fun parseWavHeader(header: ByteArray): WavHeader {
-        val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
-
-        val riff = ByteArray(4)
-        buffer.get(riff)
-        if (String(riff) != "RIFF") {
-            throw IllegalArgumentException("Invalid WAV: missing RIFF")
-        }
-
-        buffer.getInt()
-
-        val wave = ByteArray(4)
-        buffer.get(wave)
-        if (String(wave) != "WAVE") {
-            throw IllegalArgumentException("Invalid WAV: missing WAVE")
-        }
-
-        val fmt = ByteArray(4)
-        buffer.get(fmt)
-        if (String(fmt) != "fmt ") {
-            throw IllegalArgumentException("Invalid WAV: missing fmt")
-        }
-
-        buffer.getInt()
-        buffer.getShort()
-        val numChannels = buffer.getShort().toInt()
-        val sampleRate = buffer.getInt()
-        buffer.getInt()
-        buffer.getShort()
-        val bitsPerSample = buffer.getShort().toInt()
-
-        return WavHeader(sampleRate, numChannels, bitsPerSample)
     }
 }

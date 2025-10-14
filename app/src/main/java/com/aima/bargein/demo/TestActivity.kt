@@ -1,25 +1,25 @@
 package com.aima.bargein.demo
 
 import android.Manifest
+import android.animation.ArgbEvaluator
+import android.animation.ValueAnimator
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.os.Bundle
+import android.graphics.drawable.GradientDrawable
+import android.os.*
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.view.Gravity
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.TextView
+import android.view.View
+import android.view.animation.DecelerateInterpolator
+import android.widget.*
+import androidx.annotation.RequiresPermission
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.aima.bargein.BargeInConfig
-import com.aima.bargein.BargeInEngine
-import com.aima.bargein.BargeInError
-import com.aima.bargein.BargeInEvent
-import com.aima.bargein.BargeInListener
-import com.aima.bargein.BargeInState
+import com.aima.bargein.*
+import com.aima.bargein.vad.IVoiceActivityDetector
+import com.aima.bargein.vad.SpectralVoiceActivityDetector
 import timber.log.Timber
 import java.io.File
 import java.io.FileInputStream
@@ -29,428 +29,309 @@ class TestActivity : AppCompatActivity(), BargeInListener {
 
     private lateinit var engine: BargeInEngine
     private lateinit var tts: TextToSpeech
-    private lateinit var statusText: TextView
-    private lateinit var audioLevelText: TextView
-    private lateinit var audioLevelBar: ProgressBar
-    private lateinit var frequencyInfoText: TextView
+
+    private lateinit var statusView: TextView
+    private lateinit var levelBar: ProgressBar
+    private lateinit var infoText: TextView
+    private lateinit var freqText: TextView
     private lateinit var btnInit: Button
     private lateinit var btnGenerate: Button
     private lateinit var btnTest: Button
     private lateinit var btnStop: Button
-    private lateinit var btnMonitor: Button
 
     private var ttsReady = false
     private var wavFile: File? = null
-    private var isMonitoring = false
+    private var colorAnimator: ValueAnimator? = null
 
     companion object {
-        private const val PERMISSION_REQUEST_CODE = 100
+        private const val PERMISSION_CODE = 100
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         Timber.plant(Timber.DebugTree())
 
-        // Inicializar TTS
-        tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                val result = tts.setLanguage(Locale("es", "ES"))
-                ttsReady = (result != TextToSpeech.LANG_MISSING_DATA &&
-                        result != TextToSpeech.LANG_NOT_SUPPORTED)
-
-                tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {
-                        Timber.d("TTS started")
-                    }
-                    override fun onDone(utteranceId: String?) {
-                        Timber.d("TTS completed")
-                        if (utteranceId == "generate_wav") {
-                            runOnUiThread {
-                                statusText.text = "✅ Audio generado\nPresiona 'PROBAR CON WAV'"
-                                btnTest.isEnabled = true
-                            }
-                        }
-                    }
-                    override fun onError(utteranceId: String?) {
-                        Timber.e("TTS error")
-                    }
-                })
-
-                Timber.i("TTS initialized: ready=$ttsReady")
-            }
-        }
+        // Fondo con gradiente azul → blanco
+        val bg = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.parseColor("#E3F2FD"), Color.WHITE)
+        )
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 32, 32, 32)
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = bg
+            setPadding(48, 64, 48, 64)
         }
 
-        // ===== TÍTULO =====
-        val titleText = TextView(this).apply {
-            text = "🎤 Barge-In Monitor"
-            textSize = 24f
-            setTextColor(Color.parseColor("#2196F3"))
+        // ======= Título =======
+        val title = TextView(this).apply {
+            text = "🎙️ Barge-In Demo"
+            textSize = 28f
+            setTextColor(Color.parseColor("#0D47A1"))
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 16)
         }
 
-        // ===== MEDIDOR DE AUDIO =====
-        val audioMeterContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(16, 16, 16, 16)
-            setBackgroundColor(Color.parseColor("#F5F5F5"))
+        // ======= Estado =======
+        statusView = TextView(this).apply {
+            text = "Esperando permisos..."
+            textSize = 18f
+            gravity = Gravity.CENTER
+            setPadding(0, 32, 0, 16)
         }
 
-        audioLevelText = TextView(this).apply {
-            text = "🔇 Nivel de Audio: -- dB"
-            textSize = 16f
-            setPadding(0, 0, 0, 8)
-        }
-
-        audioLevelBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+        // ======= Barra de audio =======
+        levelBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
             progress = 0
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 48
-            )
+            ).apply { setMargins(0, 24, 0, 24) }
+            progressDrawable = ContextCompat.getDrawable(this@TestActivity, android.R.drawable.progress_horizontal)
         }
 
-        frequencyInfoText = TextView(this).apply {
-            text = """
-                Bandas de Frecuencia:
-                🔵 Bajas: -- | 🟢 Medias: -- | 🟡 Altas: --
-            """.trimIndent()
-            textSize = 12f
-            setPadding(0, 8, 0, 0)
+        infoText = TextView(this).apply {
+            text = "🔇 Nivel: -- dB | Confianza: --"
+            textSize = 16f
+            gravity = Gravity.CENTER
         }
 
-        audioMeterContainer.addView(audioLevelText)
-        audioMeterContainer.addView(audioLevelBar)
-        audioMeterContainer.addView(frequencyInfoText)
-
-        // ===== STATUS =====
-        statusText = TextView(this).apply {
-            text = "Esperando permisos..."
+        freqText = TextView(this).apply {
+            text = "🎧 Frecuencias altas: --%"
             textSize = 14f
-            setPadding(0, 16, 0, 16)
+            gravity = Gravity.CENTER
+            setTextColor(Color.DKGRAY)
+            setPadding(0, 8, 0, 32)
         }
 
-        // ===== BOTONES =====
-        btnInit = Button(this).apply {
-            text = "1️⃣ Inicializar Motor"
-            isEnabled = false
+        // ======= Botones =======
+        val btnStyle: (String) -> Button = { text ->
+            Button(this).apply {
+                this.text = text
+                textSize = 16f
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#1976D2"))
+                stateListAnimator = null
+            }
+        }
+
+        btnInit = btnStyle("1️⃣ Inicializar Motor").apply {
             setOnClickListener { initializeEngine() }
         }
 
-        btnMonitor = Button(this).apply {
-            text = "🎙️ Monitor de Audio (Solo Escuchar)"
-            isEnabled = false
-            setOnClickListener { toggleMonitoring() }
-        }
-
-        btnGenerate = Button(this).apply {
-            text = "2️⃣ Generar Audio WAV"
+        btnGenerate = btnStyle("2️⃣ Generar WAV").apply {
             isEnabled = false
             setOnClickListener { generateWavFile() }
         }
 
-        btnTest = Button(this).apply {
-            text = "3️⃣ PROBAR (Reproduce + Detecta)"
+        btnTest = btnStyle("3️⃣ Reproducir + Detectar").apply {
             isEnabled = false
-            setOnClickListener { startTestWithWav() }
+            setOnClickListener {
+                // ✅ Comprobamos permiso antes de usar el micrófono
+                if (ContextCompat.checkSelfPermission(
+                        this@TestActivity,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                ) {
+                    startTest()
+                } else {
+                    // ❌ Sin permiso → mostramos aviso y pedimos permiso de nuevo
+                    statusView.text = "⚠️ Permiso de micrófono no concedido"
+                    ActivityCompat.requestPermissions(
+                        this@TestActivity,
+                        arrayOf(Manifest.permission.RECORD_AUDIO),
+                        PERMISSION_CODE
+                    )
+                }
+            }
         }
 
-        btnStop = Button(this).apply {
-            text = "⏸️ Detener"
+
+        btnStop = btnStyle("⏹️ Detener").apply {
             isEnabled = false
+            setBackgroundColor(Color.parseColor("#C62828"))
             setOnClickListener { stopTest() }
         }
 
-        layout.addView(titleText)
-        layout.addView(audioMeterContainer)
-        layout.addView(statusText)
+        layout.addView(title)
+        layout.addView(statusView)
+        layout.addView(levelBar)
+        layout.addView(infoText)
+        layout.addView(freqText)
         layout.addView(btnInit)
-        layout.addView(btnMonitor)
         layout.addView(btnGenerate)
         layout.addView(btnTest)
         layout.addView(btnStop)
 
         setContentView(layout)
+
+        initTts()
         checkPermissions()
-
-        // Iniciar actualización de UI
-        startUIUpdates()
+        startUiUpdater()
     }
 
-    private fun startUIUpdates() {
-        val handler = android.os.Handler(mainLooper)
-        val updateRunnable = object : Runnable {
-            override fun run() {
-                updateAudioVisualizer()
-                handler.postDelayed(this, 100) // Actualizar cada 100ms
+    private fun initTts() {
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts.language = Locale("es", "ES")
+                ttsReady = true
+                Timber.i("TTS ready")
             }
         }
-        handler.post(updateRunnable)
-    }
-
-    private fun updateAudioVisualizer() {
-        if (!::engine.isInitialized) return
-
-        try {
-            val metrics = engine.getMetrics()
-            val vadMetrics = metrics.vadMetrics ?: return
-
-            // Calcular nivel de audio aproximado (basado en frames con voz)
-            val totalFrames = vadMetrics.framesProcessed.toFloat()
-            if (totalFrames == 0f) return
-
-            val voiceRatio = vadMetrics.voiceFrames.toFloat() / totalFrames
-            val avgConfidence = vadMetrics.averageConfidence
-
-            // Simular nivel de dB (de -60 a 0)
-            val estimatedDb = -60f + (avgConfidence * 60f)
-
-            // Actualizar barra de progreso (0-100)
-            val barProgress = ((estimatedDb + 60f) * 100f / 60f).toInt().coerceIn(0, 100)
-
-            audioLevelBar.progress = barProgress
-
-            // Cambiar color según nivel
-            val color = when {
-                barProgress > 70 -> Color.parseColor("#4CAF50") // Verde - Alto
-                barProgress > 40 -> Color.parseColor("#FF9800") // Naranja - Medio
-                else -> Color.parseColor("#F44336") // Rojo - Bajo
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+            override fun onDone(utteranceId: String?) {
+                runOnUiThread {
+                    statusView.text = "✅ WAV generado. Listo para probar."
+                    btnTest.isEnabled = true
+                }
             }
-            audioLevelBar.progressTintList = android.content.res.ColorStateList.valueOf(color)
-
-            // Actualizar texto
-            val icon = when {
-                barProgress > 70 -> "🔊"
-                barProgress > 40 -> "🔉"
-                barProgress > 10 -> "🔈"
-                else -> "🔇"
-            }
-
-            audioLevelText.text = "$icon Nivel: ${String.format("%.1f", estimatedDb)} dB | " +
-                    "Confianza: ${String.format("%.2f", avgConfidence)} | " +
-                    "Frames voz: ${vadMetrics.voiceFrames}"
-
-            // Info adicional
-            if (vadMetrics.framesProcessed > 0) {
-                frequencyInfoText.text = """
-                    📊 Frames procesados: ${vadMetrics.framesProcessed}
-                    ✅ Frames con voz: ${vadMetrics.voiceFrames}
-                    ⏱️ Tiempo proc: ${vadMetrics.averageProcessingTimeUs}µs
-                """.trimIndent()
-            }
-
-        } catch (e: Exception) {
-            Timber.e(e, "Error updating visualizer")
-        }
-    }
-
-    private fun toggleMonitoring() {
-        if (!isMonitoring) {
-            startMonitoring()
-        } else {
-            stopMonitoring()
-        }
-    }
-
-    private fun startMonitoring() {
-        try {
-            engine.startListening()
-            isMonitoring = true
-
-            btnMonitor.text = "⏸️ Detener Monitor"
-            btnMonitor.setBackgroundColor(Color.parseColor("#F44336"))
-
-            statusText.text = """
-                🎤 MONITOREANDO AUDIO
-                
-                Habla cerca del micrófono
-                Observa la barra de audio
-            """.trimIndent()
-
-            Timber.i("Monitoring started")
-
-        } catch (e: Exception) {
-            statusText.text = "❌ Error: ${e.message}"
-        }
-    }
-
-    private fun stopMonitoring() {
-        engine.stopListening()
-        isMonitoring = false
-
-        btnMonitor.text = "🎙️ Monitor de Audio"
-        btnMonitor.setBackgroundColor(Color.parseColor("#2196F3"))
-
-        statusText.text = "Monitor detenido"
+            override fun onError(utteranceId: String?) {}
+        })
     }
 
     private fun checkPermissions() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.RECORD_AUDIO),
-                PERMISSION_REQUEST_CODE
-            )
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), PERMISSION_CODE)
         } else {
             onPermissionsGranted()
         }
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                onPermissionsGranted()
-            } else {
-                statusText.text = "❌ Sin permiso de micrófono"
-            }
-        }
+        if (requestCode == PERMISSION_CODE &&
+            grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+        ) onPermissionsGranted()
+        else statusView.text = "❌ Sin permiso de micrófono"
     }
 
     private fun onPermissionsGranted() {
-        statusText.text = "✅ Permisos OK\nPresiona 'Inicializar Motor'"
+        statusView.text = "✅ Permiso de micrófono concedido"
         btnInit.isEnabled = true
     }
 
+    // === Inicializar motor ===
     private fun initializeEngine() {
         try {
-            statusText.text = "⏳ Inicializando..."
-
-            engine = BargeInEngine(
-                context = applicationContext,
-                config = BargeInConfig(
-                    sampleRate = 16000,
-                    vadMode = com.aima.bargein.vad.IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
-                    minVoiceDurationMs = 150, // MÁS corto
-                    voiceConfidenceThreshold = 0.50f, // MÁS bajo
-                    enableMetrics = true
-                ),
-                listener = this
+            statusView.text = "⏳ Inicializando..."
+            val config = BargeInConfig(
+                sampleRate = 16000,
+                vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
+                minVoiceDurationMs = 150,
+                voiceConfidenceThreshold = 0.5f,
+                highBandMinHz = 2800,
+                highBandMaxHz = 7000,
+                highRatioThreshold = 0.12f
             )
-
+            engine = BargeInEngine(applicationContext, config, this)
             engine.initialize()
-
-            statusText.text = """
-            ✅ Motor inicializado
-            
-            Filtro: Solo frecuencias altas
-            Voz debe tener > 12% energía alta
-        """.trimIndent()
+            statusView.text = "✅ Motor listo\nHabla para probar detección"
             btnInit.isEnabled = false
-            btnMonitor.isEnabled = true
             btnGenerate.isEnabled = true
-
-            Timber.i("Engine initialized with frequency-only filter")
-
         } catch (e: Exception) {
-            statusText.text = "❌ Error:\n${e.message}"
-            Timber.e(e, "Init failed")
+            statusView.text = "❌ Error: ${e.message}"
         }
     }
 
+    // === Generar WAV ===
     private fun generateWavFile() {
         if (!ttsReady) {
-            statusText.text = "⚠️ TTS no listo"
+            statusView.text = "⚠️ TTS no listo"
             return
         }
 
-        try {
-            wavFile = File(cacheDir, "test_speech.wav")
-
-            statusText.text = "⏳ Generando audio WAV..."
-            btnGenerate.isEnabled = false
-
-            val text = """
-                Te voy a explicar el Imperio Romano. 
-                El Imperio Romano fue una de las civilizaciones más poderosas de la historia antigua.
-                Fundado en el año setecientos cincuenta y tres antes de Cristo.
-                Con el tiempo, se expandió por toda Europa, el norte de África y el Medio Oriente.
-                Los romanos construyeron impresionantes acueductos y carreteras.
-            """.trimIndent()
-
-            val params = Bundle()
-            params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "generate_wav")
-
-            tts.synthesizeToFile(text, params, wavFile, "generate_wav")
-
-        } catch (e: Exception) {
-            statusText.text = "❌ Error generando WAV:\n${e.message}"
-            Timber.e(e, "Failed to generate WAV")
-        }
+        wavFile = File(cacheDir, "demo.wav")
+        val text = """
+            Hola, soy AiMA. Estoy hablando para probar la detección de interrupción.
+            Dime algo y te escucharé.
+        """.trimIndent()
+        val params = Bundle()
+        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "wavgen")
+        statusView.text = "⏳ Generando audio..."
+        btnGenerate.isEnabled = false
+        tts.synthesizeToFile(text, params, wavFile, "wavgen")
     }
 
-    private fun startTestWithWav() {
+    // === Reproducir WAV y escuchar ===
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
+    private fun startTest() {
         if (wavFile == null || !wavFile!!.exists()) {
-            statusText.text = "❌ No hay archivo WAV"
+            statusView.text = "❌ No hay archivo WAV"
             return
         }
 
         try {
-            statusText.text = """
-                📢 REPRODUCIENDO + ESCUCHANDO
-                
-                Observa la barra de audio
-                ¡Interrumpe hablando fuerte!
-            """.trimIndent()
-
+            statusView.text = "🎧 Reproduciendo y escuchando...\nHabla para interrumpir."
             btnTest.isEnabled = false
             btnStop.isEnabled = true
-            btnMonitor.isEnabled = false
-
-            engine.startListening()
 
             val inputStream = FileInputStream(wavFile)
+            engine.startListening()
             engine.playAudio(inputStream)
-
-            Timber.i("Started test with WAV")
-
         } catch (e: Exception) {
-            statusText.text = "❌ Error: ${e.message}"
-            Timber.e(e, "Failed to start test")
+            statusView.text = "❌ Error: ${e.message}"
         }
     }
 
     private fun stopTest() {
-        engine.stopListening()
-
-        statusText.text = "⏸️ Detenido"
-        btnTest.isEnabled = true
-        btnStop.isEnabled = false
-        btnMonitor.isEnabled = true
+        try {
+            val stopped = engine.forceStopPlayback()
+            if (stopped) {
+                statusView.text = "⏹️ Audio detenido (mic sigue activo)"
+                Timber.i("🎧 Playback stopped manually, mic still active")
+            } else {
+                statusView.text = "⚠️ No había audio reproduciéndose"
+            }
+            btnStop.isEnabled = false
+            btnTest.isEnabled = true
+        } catch (e: Exception) {
+            Timber.e(e, "Error stopping playback")
+        }
     }
 
-    // ========== BargeInListener ==========
 
+    // === UI Updater ===
+    private fun startUiUpdater() {
+        val handler = Handler(mainLooper)
+        handler.post(object : Runnable {
+            override fun run() {
+                updateVisualizer()
+                handler.postDelayed(this, 120)
+            }
+        })
+    }
+
+    private fun updateVisualizer() {
+        if (!::engine.isInitialized) return
+        val conf = engine.lastConfidence.coerceIn(0f, 1f)
+
+        val db = -60f + (conf * 60f)
+        val progress = ((db + 60f) * 100 / 60f).toInt()
+
+        levelBar.progress = progress
+        val color = ArgbEvaluator().evaluate(conf, Color.parseColor("#1976D2"), Color.parseColor("#4CAF50")) as Int
+        levelBar.progressTintList = android.content.res.ColorStateList.valueOf(color)
+
+        infoText.text = "🎚️ Nivel: ${"%.1f".format(db)} dB | Confianza: ${"%.2f".format(conf)}"
+        freqText.text = if (conf > 0.12f) "🎧 Alta energía detectada (${(conf * 100).toInt()}%)"
+        else "🔇 Esperando voz..."
+    }
+
+    // === BargeInListener ===
     override fun onUserInterruption(event: BargeInEvent) {
         runOnUiThread {
-            val emoji = if (event.latencyMs < 300) "✅" else "⚠️"
-
-            statusText.text = """
-                🎉 ¡INTERRUMPIDO!
-                
-                $emoji Latencia: ${String.format("%.0f", event.latencyMs)} ms
-                📊 Confianza: ${(event.confidence * 100).toInt()}%
-                🔊 Energía: ${String.format("%.1f", event.energyDb)} dB
-            """.trimIndent()
-
-            btnTest.isEnabled = true
+            animateStatus("🚨 Interrupción detectada", "#4CAF50")
             btnStop.isEnabled = false
-            btnMonitor.isEnabled = true
+            btnTest.isEnabled = true
+            statusView.text = """
+                ✅ Interrupción: ${"%.0f".format(event.latencyMs)} ms
+                Confianza ${(event.confidence * 100).toInt()}%
+            """.trimIndent()
         }
-
-        Timber.i("🎉 BARGE-IN! latency=${event.latencyMs}ms")
     }
 
     override fun onStateChanged(state: BargeInState) {
@@ -458,17 +339,26 @@ class TestActivity : AppCompatActivity(), BargeInListener {
     }
 
     override fun onError(error: BargeInError) {
-        runOnUiThread {
-            statusText.text = "❌ Error: ${error.code}\n${error.message}"
+        runOnUiThread { animateStatus("❌ Error: ${error.code}", "#C62828") }
+    }
+
+    private fun animateStatus(text: String, colorHex: String) {
+        statusView.text = text
+        val from = (statusView.currentTextColor)
+        val to = Color.parseColor(colorHex)
+        colorAnimator?.cancel()
+        colorAnimator = ValueAnimator.ofObject(ArgbEvaluator(), from, to).apply {
+            duration = 800
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { statusView.setTextColor(it.animatedValue as Int) }
+            start()
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        if (::engine.isInitialized) engine.release()
         tts.stop()
         tts.shutdown()
-        if (::engine.isInitialized) {
-            engine.release()
-        }
     }
 }

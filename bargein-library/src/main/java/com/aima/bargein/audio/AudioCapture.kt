@@ -1,47 +1,30 @@
 package com.aima.bargein.audio
 
 import android.Manifest
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
-import androidx.annotation.RequiresPermission  // ← AÑADIR ESTE IMPORT
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
+import android.media.*
+import androidx.annotation.RequiresPermission
+import kotlinx.coroutines.*
 import timber.log.Timber
 
 class AudioCapture(
-    private val sampleRate: Int = 16000,
+    private val sampleRate: Int = 24000,
     private val onAudioData: (ShortArray, Long) -> Unit
 ) {
     private var audioRecord: AudioRecord? = null
     private var captureJob: Job? = null
-    private val captureScope = CoroutineScope(Dispatchers.IO)
-
-    private val frameSize = (sampleRate * FRAME_DURATION_MS / 1000)
+    private val scope = CoroutineScope(Dispatchers.IO)
+    private val frameSize = (sampleRate * 10) / 1000
     private val bufferSize = AudioRecord.getMinBufferSize(
         sampleRate,
         AudioFormat.CHANNEL_IN_MONO,
         AudioFormat.ENCODING_PCM_16BIT
     ).coerceAtLeast(frameSize * 4)
 
-    @Volatile
-    private var isCapturing = false
+    @Volatile private var isCapturing = false
 
-    companion object {
-        private const val FRAME_DURATION_MS = 10
-    }
-
-    @RequiresPermission(Manifest.permission.RECORD_AUDIO)  // ← AÑADIR ESTA LÍNEA
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun startCapture() {
-        if (isCapturing) {
-            Timber.w("Audio capture already running")
-            return
-        }
-
+        if (isCapturing) return
         try {
             audioRecord = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
@@ -50,20 +33,13 @@ class AudioCapture(
                 AudioFormat.ENCODING_PCM_16BIT,
                 bufferSize
             )
-
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                throw IllegalStateException("AudioRecord initialization failed")
-            }
+            check(audioRecord?.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord init failed" }
 
             audioRecord?.startRecording()
             isCapturing = true
+            Timber.i("🎤 Audio capture started (sr=$sampleRate, buf=$bufferSize)")
 
-            Timber.i("Audio capture started: sampleRate=$sampleRate, bufferSize=$bufferSize")
-
-            captureJob = captureScope.launch {
-                captureLoop()
-            }
-
+            captureJob = scope.launch { captureLoop() }
         } catch (e: Exception) {
             Timber.e(e, "Failed to start audio capture")
             cleanup()
@@ -71,67 +47,34 @@ class AudioCapture(
         }
     }
 
-    // ... resto del código sin cambios
+    private fun captureLoop() {
+        val buffer = ShortArray(frameSize)
+        while (isCapturing && scope.isActive) {
+            val timestamp = System.nanoTime()
+            val read = audioRecord?.read(buffer, 0, frameSize, AudioRecord.READ_BLOCKING) ?: 0
+            if (read > 0) onAudioData(buffer.copyOf(read), timestamp)
+            else if (read < 0) Timber.w("AudioRecord read error: $read")
+        }
+    }
 
     fun stopCapture() {
         if (!isCapturing) return
-
         isCapturing = false
         captureJob?.cancel()
         cleanup()
-
-        Timber.i("Audio capture stopped")
-    }
-
-    private fun captureLoop() {
-        val buffer = ShortArray(frameSize)
-
-        while (isCapturing && captureScope.isActive) {
-            try {
-                val timestamp = System.nanoTime()
-                val samplesRead = audioRecord?.read(buffer, 0, frameSize) ?: 0
-
-                when {
-                    samplesRead > 0 -> {
-                        onAudioData(buffer.copyOf(samplesRead), timestamp)
-                    }
-                    samplesRead == AudioRecord.ERROR_INVALID_OPERATION -> {
-                        Timber.e("AudioRecord error: INVALID_OPERATION")
-                        break
-                    }
-                    samplesRead == AudioRecord.ERROR_BAD_VALUE -> {
-                        Timber.e("AudioRecord error: BAD_VALUE")
-                        break
-                    }
-                }
-
-            } catch (e: Exception) {
-                if (isCapturing) {
-                    Timber.e(e, "Error in capture loop")
-                }
-                break
-            }
-        }
+        Timber.i("🎧 Audio capture stopped")
     }
 
     private fun cleanup() {
         try {
             audioRecord?.apply {
-                if (state == AudioRecord.STATE_INITIALIZED) {
-                    stop()
-                }
+                if (state == AudioRecord.STATE_INITIALIZED) stop()
                 release()
             }
-            audioRecord = null
         } catch (e: Exception) {
-            Timber.e(e, "Error cleaning up AudioRecord")
-        }
+            Timber.e(e, "cleanup error")
+        } finally { audioRecord = null }
     }
 
-    fun isCapturing(): Boolean = isCapturing
-
-    fun release() {
-        stopCapture()
-        captureScope.cancel()
-    }
+    fun release() { stopCapture(); scope.cancel() }
 }

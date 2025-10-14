@@ -3,12 +3,7 @@ package com.aima.bargein.audio
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import timber.log.Timber
 import java.io.InputStream
 import java.nio.ByteBuffer
@@ -20,7 +15,7 @@ class AudioPlayback(
 ) {
     private var audioTrack: AudioTrack? = null
     private var playbackJob: Job? = null
-    private val playbackScope = CoroutineScope(Dispatchers.IO)
+    private val playbackScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     @Volatile
     private var isPlaying = false
@@ -34,25 +29,28 @@ class AudioPlayback(
 
     fun playWav(inputStream: InputStream) {
         if (isPlaying) {
-            Timber.w("Playback already active")
-            return
+            Timber.w("⚠️ Playback already active, stopping previous")
+            stopImmediately()
         }
 
         stopRequested = false
+        isPlaying = true
 
         playbackJob = playbackScope.launch {
             try {
+                Timber.i("🎵 Starting playback...")
+
                 val header = ByteArray(44)
                 inputStream.read(header)
 
                 val wavHeader = parseWavHeader(header)
-                Timber.d("WAV: sampleRate=${wavHeader.sampleRate}, channels=${wavHeader.numChannels}")
+                Timber.d("WAV: rate=${wavHeader.sampleRate}, channels=${wavHeader.numChannels}")
 
                 val bufferSize = AudioTrack.getMinBufferSize(
                     wavHeader.sampleRate,
                     if (wavHeader.numChannels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO,
                     AudioFormat.ENCODING_PCM_16BIT
-                )
+                ).coerceAtLeast(4096)
 
                 val audioAttributes = AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_ASSISTANT)
@@ -73,19 +71,22 @@ class AudioPlayback(
                     .build()
 
                 audioTrack?.play()
-                isPlaying = true
-
-                Timber.i("Playback started")
+                Timber.i("▶️ Playback STARTED")
 
                 val buffer = ByteArray(4096)
                 var bytesRead: Int
                 var wasStopped = false
 
-                while (playbackScope.isActive && !stopRequested) {
+                while (isActive && !stopRequested) {
                     bytesRead = inputStream.read(buffer)
-                    if (bytesRead <= 0) break
+
+                    if (bytesRead <= 0) {
+                        Timber.d("📭 End of stream reached")
+                        break
+                    }
 
                     if (stopRequested) {
+                        Timber.i("⏸️ Stop requested during playback")
                         wasStopped = true
                         break
                     }
@@ -93,23 +94,30 @@ class AudioPlayback(
                     audioTrack?.write(buffer, 0, bytesRead)
                 }
 
-                audioTrack?.stop()
-                audioTrack?.release()
-                audioTrack = null
-                isPlaying = false
+                // Cleanup
+                try {
+                    audioTrack?.stop()
+                    audioTrack?.release()
+                    audioTrack = null
+                } catch (e: Exception) {
+                    Timber.e(e, "Error stopping AudioTrack")
+                }
 
+                isPlaying = false
                 inputStream.close()
 
-                if (wasStopped) {
-                    Timber.i("Playback stopped by barge-in")
-                    onPlaybackStopped()
-                } else {
-                    Timber.i("Playback completed")
-                    onPlaybackComplete()
+                withContext(Dispatchers.Main) {
+                    if (wasStopped) {
+                        Timber.i("🛑 Playback STOPPED by barge-in")
+                        onPlaybackStopped()
+                    } else {
+                        Timber.i("✅ Playback COMPLETED normally")
+                        onPlaybackComplete()
+                    }
                 }
 
             } catch (e: Exception) {
-                Timber.e(e, "Error during playback")
+                Timber.e(e, "❌ Error during playback")
                 cleanup()
             }
         }
@@ -118,19 +126,44 @@ class AudioPlayback(
     fun stopImmediately(): Long {
         val stopTime = System.currentTimeMillis()
 
-        if (!isPlaying) {
-            Timber.w("No playback active to stop")
+        if (!isPlaying && audioTrack == null) {
+            Timber.w("⚠️ No active playback to stop")
             return 0
         }
 
+        Timber.i("⏸️ STOPPING PLAYBACK IMMEDIATELY")
+
         stopRequested = true
 
-        audioTrack?.pause()
-        audioTrack?.flush()
+        // Detener AudioTrack INMEDIATAMENTE
+        try {
+            audioTrack?.apply {
+                when (playState) {
+                    AudioTrack.PLAYSTATE_PLAYING -> {
+                        pause()
+                        flush()
+                        Timber.d("✅ AudioTrack paused and flushed")
+                    }
+                    AudioTrack.PLAYSTATE_PAUSED -> {
+                        flush()
+                        Timber.d("✅ AudioTrack flushed (was paused)")
+                    }
+                    else -> {
+                        Timber.d("ℹ️ AudioTrack state: $playState")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error stopping AudioTrack")
+        }
 
-        Timber.d("Playback stop requested")
+        // Cancelar job
+        playbackJob?.cancel()
 
-        return 0
+        isPlaying = false
+
+        Timber.i("✅ Playback stopped at ${stopTime}ms")
+        return stopTime
     }
 
     fun isPlaying(): Boolean = isPlaying
@@ -145,16 +178,23 @@ class AudioPlayback(
             }
             audioTrack = null
         } catch (e: Exception) {
-            Timber.e(e, "Error cleaning up AudioTrack")
+            Timber.e(e, "Error in cleanup")
         }
         isPlaying = false
     }
 
     fun release() {
+        Timber.d("🔧 Releasing AudioPlayback")
         stopImmediately()
-        playbackJob?.cancel()
+
+        runBlocking {
+            playbackJob?.cancelAndJoin()
+        }
+
         playbackScope.cancel()
         cleanup()
+
+        Timber.d("✅ AudioPlayback released")
     }
 
     private data class WavHeader(

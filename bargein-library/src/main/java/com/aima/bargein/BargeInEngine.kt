@@ -10,6 +10,7 @@ import com.aima.bargein.audio.AudioFocusManager
 import com.aima.bargein.audio.AudioPlayback
 import com.aima.bargein.audio.AudioThreadConfig
 import com.aima.bargein.permissions.PermissionHelper
+import com.aima.bargein.vad.EnergyVoiceActivityDetector
 import com.aima.bargein.vad.IVoiceActivityDetector
 import com.aima.bargein.vad.VoiceActivityDetectorFactory
 import kotlinx.coroutines.CoroutineScope
@@ -169,6 +170,10 @@ class BargeInEngine(
             }
 
             isPlaying.set(true)
+
+            // ===== NUEVO: Notificar al VAD que hay reproducción =====
+            (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(true)
+
             audioPlayback.playWav(audioStream)
 
             Timber.i("Audio playback started")
@@ -176,6 +181,10 @@ class BargeInEngine(
         } catch (e: Exception) {
             Timber.e(e, "Error playing audio")
             isPlaying.set(false)
+
+            // ===== NUEVO: Revertir estado =====
+            (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
+
             val error = BargeInError(
                 ErrorCode.AUDIO_PLAYBACK_FAILED,
                 "Failed to play audio: ${e.message}",
@@ -192,10 +201,12 @@ class BargeInEngine(
         audioPlayback.stopImmediately()
         isPlaying.set(false)
 
+        // ===== NUEVO: Notificar al VAD que NO hay reproducción =====
+        (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
+
         Timber.i("Audio playback stopped by barge-in")
         return stopTimestamp
     }
-
     fun release() {
         Timber.d("Releasing BargeInEngine...")
 
@@ -278,15 +289,24 @@ class BargeInEngine(
         vadResult: IVoiceActivityDetector.VadResult,
         detectionTimestamp: Long
     ) {
-        if (!isPlaying.get()) return
+        // Evitar múltiples triggers
+        if (!isPlaying.get()) {
+            Timber.w("Not playing, ignoring barge-in trigger")
+            return
+        }
+
+        Timber.i("🚨 BARGE-IN TRIGGERED! Stopping playback...")
 
         updateState(BargeInState.INTERRUPTED)
 
+        // Detener reproducción INMEDIATAMENTE
         val stopTimestamp = stopPlayback()
 
+        // Calcular latencia
         val latencyNs = stopTimestamp - voiceDetectionStartTime
         val latencyMs = latencyNs / 1_000_000f
 
+        // Crear evento
         val event = BargeInEvent(
             detectionTimestamp = voiceDetectionStartTime,
             stopTimestamp = stopTimestamp,
@@ -295,10 +315,12 @@ class BargeInEngine(
             energyDb = vadResult.energyDb
         )
 
+        // Notificar listener
         listener.onUserInterruption(event)
 
-        Timber.i("Barge-in triggered: latency=${latencyMs}ms, confidence=${vadResult.confidence}")
+        Timber.i("🎉 Barge-in completed: latency=${latencyMs}ms, confidence=${vadResult.confidence}")
 
+        // Resetear contador
         consecutiveVoiceFrames = 0
         voiceDetectionStartTime = 0
     }

@@ -30,17 +30,23 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
     companion object {
         private const val HISTORY_SIZE = 100
 
-        // ✅ THRESHOLDS RELAJADOS para mejor detección
-        private const val VOICE_THRESHOLD_MARGIN_DB = 8f  // Reducido de 12f a 8f
+        // ✅ THRESHOLDS OPTIMIZADOS - Evita ruido, detecta voz
+        private const val VOICE_THRESHOLD_MARGIN_DB = 6f   // Ligeramente más alto
         private const val MIN_ENERGY_DB = -60f
-        private const val PLAYBACK_SUPPRESSION_DB = 5f    // Reducido de 8f a 5f
+        private const val PLAYBACK_SUPPRESSION_DB = 7f     // Más estricto durante playback
 
-        // ✅ Requiere 2 frames consecutivos (20ms) para confirmar voz
+        // ✅ CRÍTICO: Mínimo 2 frames para evitar falsos positivos
         private const val MIN_CONSECUTIVE_VOICE_FRAMES = 2
 
-        // ✅ Durante playback, rechazar si es MUY fuerte (probablemente altavoz)
-        private const val MAX_ENERGY_DURING_PLAYBACK_DB = -15f  // Relajado de -18f a -15f
+        // ✅ Durante playback, rechazar energía muy alta
+        private const val MAX_ENERGY_DURING_PLAYBACK_DB = -12f
+
+        // ✅ Salto de energía = altavoz
+        private const val ENERGY_JUMP_THRESHOLD_DB = 15f
     }
+
+    private var lastEnergyDb = -60f
+    private var energyBeforePlayback = -60f
 
     private var consecutiveVoiceFrames = 0
     private var consecutiveRejectedFrames = 0
@@ -54,12 +60,12 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
         mode: IVoiceActivityDetector.AggressivenessMode
     ): Boolean {
         try {
-            // ✅ Thresholds más PERMISIVOS para mejor detección
+            // ✅ Thresholds ULTRA PERMISIVOS - Acepta casi todo
             energyThresholdDb = when (mode) {
-                IVoiceActivityDetector.AggressivenessMode.QUALITY -> -42f         // Relajado
-                IVoiceActivityDetector.AggressivenessMode.LOW_BITRATE -> -35f     // Relajado
-                IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE -> -35f      // Relajado
-                IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE -> -38f // Muy relajado
+                IVoiceActivityDetector.AggressivenessMode.QUALITY -> -50f         // Muy bajo
+                IVoiceActivityDetector.AggressivenessMode.LOW_BITRATE -> -45f     // Muy bajo
+                IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE -> -45f      // Muy bajo
+                IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE -> -48f // Ultra bajo
             }
 
             isActive = true
@@ -78,13 +84,15 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
     fun setPlaybackActive(active: Boolean) {
         isPlaybackActive = active
 
-        if (!active) {
+        if (active) {
+            // Guardar energía antes del playback para comparación
+            energyBeforePlayback = lastEnergyDb
+            Timber.d("🔊 Playback started - baseline energy: ${String.format("%.1f", energyBeforePlayback)}dB")
+        } else {
             // Reset contadores al terminar reproducción
             consecutiveVoiceFrames = 0
             consecutiveRejectedFrames = 0
             Timber.d("🔕 Playback ended - counters reset")
-        } else {
-            Timber.d("🔊 Playback started - stricter thresholds active")
         }
     }
 
@@ -135,7 +143,7 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
         // Nunca bajar del threshold base
         adaptiveThreshold = adaptiveThreshold.coerceAtLeast(energyThresholdDb)
 
-        // ===== PASO 5: DETECCIÓN CON FILTROS MÚLTIPLES =====
+        // ===== PASO 5: DETECCIÓN CON FILTROS EQUILIBRADOS =====
         var hasVoice = false
         var rejectionReason = ""
 
@@ -143,27 +151,44 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
         if (energyDb <= adaptiveThreshold) {
             rejectionReason = "Low energy (${String.format("%.1f", energyDb)}dB < ${String.format("%.1f", adaptiveThreshold)}dB)"
         }
-        // 5.2: ✅ CRÍTICO - Rechazar si es eco del altavoz
+        // 5.2: ✅ Rechazar altavoz obvio
         else if (freqAnalysis.isLikelySpeakerEcho()) {
             rejectionReason = "Speaker echo [${freqAnalysis.getDebugInfo()}]"
             rejectedFrames.incrementAndGet()
         }
-        // 5.3: ✅ CRÍTICO - Debe ser voz real
+        // 5.3: ✅ Verificar que sea voz
         else if (!freqAnalysis.isLikelyRealVoice()) {
             rejectionReason = "Not voice pattern [${freqAnalysis.getDebugInfo()}]"
             rejectedFrames.incrementAndGet()
         }
-        // 5.4: ✅ Durante playback, rechazar si es EXCESIVAMENTE fuerte
-        else if (isPlaybackActive && energyDb > MAX_ENERGY_DURING_PLAYBACK_DB) {
-            rejectionReason = "Too loud during playback (${String.format("%.1f", energyDb)}dB > ${MAX_ENERGY_DURING_PLAYBACK_DB}dB)"
-            rejectedFrames.incrementAndGet()
+        // 5.4: ✅ CRÍTICO: Durante playback, filtros adicionales
+        else if (isPlaybackActive) {
+            // 5.4a: Rechazar si energía es MUY alta (probablemente altavoz puro)
+            if (energyDb > MAX_ENERGY_DURING_PLAYBACK_DB) {
+                rejectionReason = "Too loud during playback (${String.format("%.1f", energyDb)}dB > ${MAX_ENERGY_DURING_PLAYBACK_DB}dB)"
+                rejectedFrames.incrementAndGet()
+            }
+            // 5.4b: NUEVO - Rechazar si energía sube súbitamente (inicio de playback = altavoz)
+            else if (energyDb - lastEnergyDb > ENERGY_JUMP_THRESHOLD_DB) {
+                rejectionReason = "Sudden energy jump (${String.format("%.1f", energyDb - lastEnergyDb)}dB increase)"
+                rejectedFrames.incrementAndGet()
+            }
+            // 5.4c: Todo OK - Es voz durante playback
+            else {
+                hasVoice = true
+                consecutiveVoiceFrames++
+                consecutiveRejectedFrames = 0
+            }
         }
-        // 5.5: TODO OK - Es voz real
+        // 5.5: Sin playback - Es voz real
         else {
             hasVoice = true
             consecutiveVoiceFrames++
             consecutiveRejectedFrames = 0
         }
+
+        // Guardar energía actual para siguiente frame
+        lastEnergyDb = energyDb
 
         // Si fue rechazado, resetear contador de voz
         if (!hasVoice) {

@@ -213,31 +213,41 @@ object AudioFilter {
     ) {
         /**
          * Detecta si es eco del altavoz con MÚLTIPLES criterios.
-         * ✅ CRITERIOS MÁS ESTRICTOS - Solo rechazar casos muy obvios
+         * ✅ MÁS ESTRICTO - Rechaza ruido y altavoz mejor
          */
         fun isLikelySpeakerEcho(): Boolean {
-            // Criterio 1: ZCR EXTREMADAMENTE bajo (solo altavoz puro)
-            if (zeroCrossingRate < 0.050f) {
+            // Criterio 1: ZCR bajo (típico de altavoz/ruido)
+            if (zeroCrossingRate < 0.065f) {
                 return true
             }
 
-            // Criterio 2: Energía DOMINADA por graves (>70%)
-            if (lowBandEnergy > 0.70f) {
+            // Criterio 2: Energía MUY dominada por graves
+            if (lowBandEnergy > 0.65f) {
                 return true
             }
 
-            // Criterio 3: Casi SIN energía en agudos (<5%)
-            if (highBandEnergy < 0.05f && lowBandEnergy > 0.60f) {
+            // Criterio 3: Combinación de ZCR bajo-medio + muchos graves
+            if (zeroCrossingRate < 0.090f && lowBandEnergy > 0.58f) {
                 return true
             }
 
-            // Criterio 4: Baja periodicidad Y baja frecuencia (señal muy grave)
-            if (periodicity < 0.15f && zeroCrossingRate < 0.055f) {
+            // Criterio 4: Casi SIN energía en agudos + muchos graves
+            if (highBandEnergy < 0.10f && lowBandEnergy > 0.55f) {
                 return true
             }
 
-            // Criterio 5: TODAS las ventanas con baja frecuencia
-            if (lowFreqWindowRatio > 0.90f) {
+            // Criterio 5: Baja periodicidad Y baja-media frecuencia
+            if (periodicity < 0.15f && zeroCrossingRate < 0.080f) {
+                return true
+            }
+
+            // Criterio 6: Mayoría de ventanas con baja frecuencia
+            if (lowFreqWindowRatio > 0.80f) {
+                return true
+            }
+
+            // Criterio 7: SIN ventanas de alta frecuencia (típico ruido ambiente)
+            if (highFreqWindowRatio == 0f && zeroCrossingRate < 0.100f) {
                 return true
             }
 
@@ -246,31 +256,33 @@ object AudioFilter {
 
         /**
          * Detecta voz humana real con MÚLTIPLES criterios.
-         * ✅ CRITERIOS ULTRA RELAJADOS - Aceptar prácticamente todo excepto altavoz obvio
+         * ✅ MÁS ESTRICTO - Requiere señales claras de voz
          */
         fun isLikelyRealVoice(): Boolean {
-            // Criterio 1: ZCR en rango AMPLIO (muy permisivo)
-            if (zeroCrossingRate < 0.055f) {  // Solo rechazar si es extremadamente bajo
+            // Criterio 1: ZCR debe estar en rango típico de voz
+            if (zeroCrossingRate < 0.070f) {  // Subido desde 0.058
                 return false
             }
 
-            if (zeroCrossingRate > 0.50f) {  // Ampliar límite superior
+            if (zeroCrossingRate > 0.45f) {
                 return false
             }
 
-            // Criterio 2: CUALQUIER energía en medias-altas (muy relajado)
+            // Criterio 2: Debe tener energía razonable en medias-altas
             val combinedMidHigh = midBandEnergy + highBandEnergy
-            if (combinedMidHigh < 0.25f) {  // Reducido de 0.35f a 0.25f
+            if (combinedMidHigh < 0.32f) {  // Subido desde 0.28
                 return false
             }
 
-            // Criterio 3: Solo rechazar si es TOTALMENTE graves
-            if (lowBandEnergy > 0.75f) {  // Aumentado de 0.65f a 0.75f
+            // Criterio 3: No debe ser dominado por graves
+            if (lowBandEnergy > 0.68f) {  // Bajado desde 0.72
                 return false
             }
 
-            // ✅ Periodicidad es COMPLETAMENTE OPCIONAL
-            // No importa el valor, no rechazamos por esto
+            // Criterio 4: Debe tener AL MENOS 1 ventana con alta frecuencia
+            if (highFreqWindowRatio == 0f) {
+                return false
+            }
 
             return true
         }

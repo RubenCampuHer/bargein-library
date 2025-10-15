@@ -386,28 +386,28 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         }
     }
 
-    // ✅ CONFIGURACIONES ULTRA SENSIBLES
+    // ✅ CONFIGURACIONES OPTIMIZADAS - Balance detección/precisión
     private fun getConfigForMode(mode: SensitivityMode): BargeInConfig {
         return when (mode) {
             SensitivityMode.SUPER_SENSITIVE -> BargeInConfig(
                 sampleRate = 16000,
                 vadMode = IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE,
-                minVoiceDurationMs = 10, // ✅ 1 frame = ultra rápido
-                voiceConfidenceThreshold = 0.30f // ✅ Muy bajo
+                minVoiceDurationMs = 20, // 2 frames = rápido pero seguro
+                voiceConfidenceThreshold = 0.45f
             )
 
             SensitivityMode.SENSITIVE -> BargeInConfig(
                 sampleRate = 16000,
-                vadMode = IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE,
-                minVoiceDurationMs = 20, // ✅ 2 frames
-                voiceConfidenceThreshold = 0.35f // ✅ Bajo
+                vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
+                minVoiceDurationMs = 30, // 3 frames
+                voiceConfidenceThreshold = 0.50f
             )
 
             SensitivityMode.NORMAL -> BargeInConfig(
                 sampleRate = 16000,
                 vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
-                minVoiceDurationMs = 30, // ✅ 3 frames
-                voiceConfidenceThreshold = 0.40f // ✅ Moderado
+                minVoiceDurationMs = 40, // 4 frames
+                voiceConfidenceThreshold = 0.55f
             )
         }
     }
@@ -439,9 +439,9 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             }
 
             val modeText = when (newMode) {
-                SensitivityMode.SUPER_SENSITIVE -> "🔴 SUPER SENSIBLE\n30ms • Muy rápido"
-                SensitivityMode.SENSITIVE -> "🟡 SENSIBLE\n40ms • Equilibrado"
-                SensitivityMode.NORMAL -> "🟢 NORMAL\n50ms • Conservador"
+                SensitivityMode.SUPER_SENSITIVE -> "🔴 SUPER SENSIBLE\n10ms • Ultra sensible"
+                SensitivityMode.SENSITIVE -> "🟡 SENSIBLE\n20ms • Muy sensible"
+                SensitivityMode.NORMAL -> "🟢 NORMAL\n30ms • Moderado"
             }
 
             statusText.text = """

@@ -43,11 +43,11 @@ class TestActivity : AppCompatActivity(), BargeInListener {
     private var wavFile: File? = null
     private var isTestRunning = false
 
-    // Modos de sensibilidad
+    // ✅ Modos de sensibilidad CALIBRADOS
     private enum class SensitivityMode {
-        SUPER_SENSITIVE,  // Muy fácil de activar
+        SUPER_SENSITIVE,  // Ultra rápido, acepta más fácil
         SENSITIVE,        // Equilibrado
-        NORMAL            // Más estricto
+        NORMAL            // Más conservador
     }
 
     private var currentMode = SensitivityMode.SENSITIVE
@@ -85,7 +85,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         })
 
         layout.addView(TextView(this).apply {
-            text = "Micrófono siempre activo • ZCR Method"
+            text = "Micrófono siempre activo • ZCR + Periodicity Method"
             textSize = 14f
             setTextColor(Color.parseColor("#757575"))
             gravity = Gravity.CENTER
@@ -122,15 +122,15 @@ class TestActivity : AppCompatActivity(), BargeInListener {
 
         val zcrInfoText = TextView(this).apply {
             text = """
-                ZCR (Zero-Crossing Rate):
-                • Alto (>0.15) = Voz real ✅
-                • Bajo (<0.08) = Altavoz/graves ❌
+                Análisis Multi-Criterio:
+                • ZCR (0.072-0.35) = Voz ✅
+                • Periodicity (>0.3) = Estructura de voz
+                • High Freq (>48%) = Contenido agudo
             """.trimIndent()
             textSize = 12f
             setTextColor(Color.parseColor("#757575"))
         }
 
-        // Guardar referencia global
         frequencyInfoText = metricsText
 
         audioContainer.addView(audioLevelText)
@@ -298,15 +298,10 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         statusText.text = "⏳ Inicializando automáticamente..."
 
         try {
-            // Copiar/generar WAV
             copyWavFromAssets()
-
-            // Inicializar engine con modo por defecto (SENSITIVE)
             currentMode = SensitivityMode.SENSITIVE
             updateModeButtons()
             initializeEngine()
-
-            // Iniciar monitoreo automático
             startAutoMonitoring()
 
         } catch (e: Exception) {
@@ -325,13 +320,11 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         try {
             wavFile = File(cacheDir, "test_audio.wav")
 
-            // Si ya existe, usarlo
             if (wavFile!!.exists()) {
                 Timber.i("✅ WAV file already exists: ${wavFile!!.absolutePath}")
                 return
             }
 
-            // Intentar copiar desde assets
             try {
                 val assetManager = assets
                 val inputStream = assetManager.open("test_audio.wav")
@@ -350,7 +343,6 @@ class TestActivity : AppCompatActivity(), BargeInListener {
                 Timber.i("✅ WAV file copied from assets: ${wavFile!!.absolutePath}")
 
             } catch (e: Exception) {
-                // Si no existe en assets, generar uno sintético
                 Timber.w("WAV not in assets, generating synthetic audio...")
                 WavGenerator.generateTestWav(wavFile!!, durationSeconds = 15)
                 Timber.i("✅ WAV file generated: ${wavFile!!.absolutePath}")
@@ -394,27 +386,28 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         }
     }
 
+    // ✅ CONFIGURACIONES ULTRA SENSIBLES
     private fun getConfigForMode(mode: SensitivityMode): BargeInConfig {
         return when (mode) {
             SensitivityMode.SUPER_SENSITIVE -> BargeInConfig(
                 sampleRate = 16000,
                 vadMode = IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE,
-                minVoiceDurationMs = 50,  // 50ms = ~5 frames (MUY rápido)
-                voiceConfidenceThreshold = 0.45f // Muy permisivo
+                minVoiceDurationMs = 10, // ✅ 1 frame = ultra rápido
+                voiceConfidenceThreshold = 0.30f // ✅ Muy bajo
             )
 
             SensitivityMode.SENSITIVE -> BargeInConfig(
                 sampleRate = 16000,
-                vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
-                minVoiceDurationMs = 100, // 100ms = ~10 frames (Rápido)
-                voiceConfidenceThreshold = 0.55f // Permisivo
+                vadMode = IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE,
+                minVoiceDurationMs = 20, // ✅ 2 frames
+                voiceConfidenceThreshold = 0.35f // ✅ Bajo
             )
 
             SensitivityMode.NORMAL -> BargeInConfig(
                 sampleRate = 16000,
-                vadMode = IVoiceActivityDetector.AggressivenessMode.LOW_BITRATE,
-                minVoiceDurationMs = 150, // 150ms = ~15 frames (Normal)
-                voiceConfidenceThreshold = 0.65f // Más estricto
+                vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
+                minVoiceDurationMs = 30, // ✅ 3 frames
+                voiceConfidenceThreshold = 0.40f // ✅ Moderado
             )
         }
     }
@@ -431,31 +424,24 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         }
 
         currentMode = newMode
-
-        // Actualizar UI de botones
         updateModeButtons()
 
-        // Reinicializar engine con nuevo modo
         try {
             Timber.i("🔄 Changing mode to: $newMode")
 
             val wasListening = engine.getMetrics().isListening
 
-            // Release engine actual
             engine.release()
-
-            // Crear nuevo engine con nueva configuración
             initializeEngine()
 
-            // Reanudar escucha si estaba activo
             if (wasListening) {
                 startAutoMonitoring()
             }
 
             val modeText = when (newMode) {
-                SensitivityMode.SUPER_SENSITIVE -> "🔴 SUPER SENSIBLE\n50ms • Muy fácil de activar"
-                SensitivityMode.SENSITIVE -> "🟡 SENSIBLE\n100ms • Equilibrado"
-                SensitivityMode.NORMAL -> "🟢 NORMAL\n150ms • Más estricto"
+                SensitivityMode.SUPER_SENSITIVE -> "🔴 SUPER SENSIBLE\n30ms • Muy rápido"
+                SensitivityMode.SENSITIVE -> "🟡 SENSIBLE\n40ms • Equilibrado"
+                SensitivityMode.NORMAL -> "🟢 NORMAL\n50ms • Conservador"
             }
 
             statusText.text = """
@@ -475,12 +461,10 @@ class TestActivity : AppCompatActivity(), BargeInListener {
     }
 
     private fun updateModeButtons() {
-        // Reset todos los botones
         btnModeSuperSensitive.alpha = 0.5f
         btnModeSensitive.alpha = 0.5f
         btnModeNormal.alpha = 0.5f
 
-        // Destacar el modo actual
         when (currentMode) {
             SensitivityMode.SUPER_SENSITIVE -> btnModeSuperSensitive.alpha = 1.0f
             SensitivityMode.SENSITIVE -> btnModeSensitive.alpha = 1.0f
@@ -490,7 +474,6 @@ class TestActivity : AppCompatActivity(), BargeInListener {
 
     @Suppress("MissingPermission")
     private fun startAutoMonitoring() {
-        // Verificar permiso antes de iniciar
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
             statusText.text = "❌ No hay permiso de micrófono"
@@ -510,8 +493,6 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             """.trimIndent()
 
             btnPlayTest.isEnabled = true
-
-            // Iniciar actualización de UI
             startUIUpdates()
 
             Timber.i("✅ Auto-monitoring started")
@@ -529,7 +510,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         val updateRunnable = object : Runnable {
             override fun run() {
                 updateAudioVisualizer()
-                handler.postDelayed(this, 50) // Actualizar cada 50ms para más fluidez
+                handler.postDelayed(this, 50)
             }
         }
         handler.post(updateRunnable)
@@ -548,24 +529,20 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             val voiceRatio = vadMetrics.voiceFrames.toFloat() / totalFrames
             val avgConfidence = vadMetrics.averageConfidence
 
-            // Calcular nivel de dB
             val estimatedDb = -60f + (avgConfidence * 60f)
             val barProgress = ((estimatedDb + 60f) * 100f / 60f).toInt().coerceIn(0, 100)
 
-            // Actualizar barra de progreso
             audioLevelBar.progress = barProgress
 
-            // Color según nivel
             val color = when {
-                barProgress > 70 -> Color.parseColor("#4CAF50") // Verde - FUERTE
-                barProgress > 50 -> Color.parseColor("#8BC34A") // Verde claro
-                barProgress > 30 -> Color.parseColor("#FFC107") // Amarillo
-                barProgress > 15 -> Color.parseColor("#FF9800") // Naranja
-                else -> Color.parseColor("#F44336") // Rojo - BAJO
+                barProgress > 70 -> Color.parseColor("#4CAF50")
+                barProgress > 50 -> Color.parseColor("#8BC34A")
+                barProgress > 30 -> Color.parseColor("#FFC107")
+                barProgress > 15 -> Color.parseColor("#FF9800")
+                else -> Color.parseColor("#F44336")
             }
             audioLevelBar.progressTintList = android.content.res.ColorStateList.valueOf(color)
 
-            // Icono según nivel
             val icon = when {
                 barProgress > 70 -> "🔊"
                 barProgress > 50 -> "🔉"
@@ -577,7 +554,6 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             audioLevelText.text = "$icon Audio: ${String.format("%.1f", estimatedDb)} dB | " +
                     "Confianza: ${String.format("%.2f", avgConfidence)}"
 
-            // Métricas detalladas
             val stateEmoji = when (metrics.state) {
                 BargeInState.IDLE -> "💤"
                 BargeInState.LISTENING -> "🎤"
@@ -617,7 +593,6 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             return
         }
 
-        // Verificar permiso antes de reproducir
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
             statusText.text = "❌ No hay permiso de micrófono"
@@ -635,7 +610,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
                 Observa:
                 • Barra de nivel de audio
                 • Métricas en tiempo real
-                • Logs con ZCR
+                • Logs con ZCR y periodicidad
             """.trimIndent()
 
             btnPlayTest.isEnabled = false
@@ -670,7 +645,6 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         try {
             Timber.i("🛑 User requested to stop audio...")
 
-            // Detener solo el audio, mantener micrófono activo
             engine.stopAudioPlayback()
 
             isTestRunning = false
@@ -711,7 +685,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
                 
                 $emoji Latencia: ${String.format("%.0f", event.latencyMs)} ms $colorIndicator
                 📊 Confianza: ${String.format("%.0f", event.confidence * 100)}%
-                🔊 Energía: ${String.format("%.1f", event.energyDb)} dB
+                📊 Energía: ${String.format("%.1f", event.energyDb)} dB
                 
                 ${if (latencyOk) "¡Excelente respuesta! <300ms" else "Mejorable (>300ms)"}
                 
@@ -721,7 +695,6 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             btnPlayTest.isEnabled = true
             btnStopTest.isEnabled = false
 
-            // Auto-reanudar monitoreo con verificación de permisos
             handler.postDelayed({
                 if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
                     == PackageManager.PERMISSION_GRANTED) {
@@ -735,7 +708,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         }
 
         Timber.i("🎉 BARGE-IN! latency=${String.format("%.1f", event.latencyMs)}ms, " +
-                "conf=${String.format("%.0f", event.confidence * 100)}%%, " +
+                "conf=${String.format("%.0f", event.confidence * 100)}%, " +
                 "energy=${String.format("%.1f", event.energyDb)}dB")
     }
 

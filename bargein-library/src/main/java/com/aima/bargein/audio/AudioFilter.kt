@@ -5,10 +5,14 @@ import kotlin.math.*
 
 object AudioFilter {
 
+    /**
+     * Filtro paso-alto mejorado para eliminar graves del altavoz.
+     * Cutoff aumentado a 450Hz para ser más agresivo.
+     */
     fun applyHighPassFilter(
         samples: ShortArray,
         length: Int,
-        cutoffFreq: Float = 300f,
+        cutoffFreq: Float = 450f, // ✅ Más agresivo contra altavoz
         sampleRate: Int = 16000
     ) {
         val rc = 1.0f / (2.0f * PI.toFloat() * cutoffFreq)
@@ -28,8 +32,12 @@ object AudioFilter {
     }
 
     /**
-     * Análisis de frecuencias SIMPLIFICADO pero CORRECTO.
-     * Usa Zero-Crossing Rate + Energy Distribution.
+     * Análisis de frecuencias MEJORADO usando ZCR + Autocorrelación.
+     *
+     * Combina:
+     * 1. Zero-Crossing Rate (ZCR) - mide contenido de alta frecuencia
+     * 2. Autocorrelación - detecta periodicidad (voz tiene más estructura)
+     * 3. Análisis de ventanas - verifica consistencia temporal
      */
     fun analyzeFrequencyBands(
         samples: ShortArray,
@@ -37,7 +45,7 @@ object AudioFilter {
         sampleRate: Int = 16000
     ): FrequencyAnalysis {
 
-        // Calcular Zero-Crossing Rate (indica contenido de alta frecuencia)
+        // ===== 1. CALCULAR ZCR =====
         var zeroCrossings = 0
         for (i in 1 until length) {
             if ((samples[i - 1] >= 0 && samples[i] < 0) ||
@@ -45,53 +53,26 @@ object AudioFilter {
                 zeroCrossings++
             }
         }
-
         val zcr = zeroCrossings.toFloat() / length
 
-        // Calcular energía por bandas usando filtros simples
+        // ===== 2. CALCULAR ENERGÍA TOTAL =====
         var totalEnergy = 0.0
-        var lowEnergy = 0.0
-        var midEnergy = 0.0
-        var highEnergy = 0.0
-
-        // Calcular energía total primero
         for (i in 0 until length) {
-            val sample = samples[i] / 32768.0
-            totalEnergy += sample * sample
+            val normalized = samples[i] / 32768.0
+            totalEnergy += normalized * normalized
         }
 
-        // Estimar distribución de energía usando ZCR y autocorrelación
-        // ZCR alto = más alta frecuencia
-        // ZCR bajo = más baja frecuencia
+        // ===== 3. AUTOCORRELACIÓN (detecta periodicidad) =====
+        val periodicity = calculatePeriodicity(samples, length)
 
-        if (zcr < 0.05f) {
-            // Señal muy grave (altavoz típico)
-            lowEnergy = totalEnergy * 0.70
-            midEnergy = totalEnergy * 0.25
-            highEnergy = totalEnergy * 0.05
-        } else if (zcr < 0.15f) {
-            // Señal mixta (posible voz con eco)
-            lowEnergy = totalEnergy * 0.40
-            midEnergy = totalEnergy * 0.45
-            highEnergy = totalEnergy * 0.15
-        } else if (zcr < 0.30f) {
-            // Voz normal
-            lowEnergy = totalEnergy * 0.20
-            midEnergy = totalEnergy * 0.50
-            highEnergy = totalEnergy * 0.30
-        } else {
-            // Voz aguda o sibilante
-            lowEnergy = totalEnergy * 0.10
-            midEnergy = totalEnergy * 0.40
-            highEnergy = totalEnergy * 0.50
-        }
+        // ===== 4. ANÁLISIS POR VENTANAS =====
+        val numWindows = 4
+        val windowSize = length / numWindows
+        var highFreqWindows = 0
+        var lowFreqWindows = 0
 
-        // Calcular energía en ventanas para refinar
-        val windowSize = length / 4
-        var highFreqContent = 0.0
-
-        for (window in 0 until 4) {
-            val start = window * windowSize
+        for (w in 0 until numWindows) {
+            val start = w * windowSize
             val end = minOf(start + windowSize, length)
 
             var windowZC = 0
@@ -103,35 +84,121 @@ object AudioFilter {
             }
 
             val windowZCR = windowZC.toFloat() / (end - start)
-            if (windowZCR > 0.20f) {
-                highFreqContent += 1.0
+
+            if (windowZCR > 0.15f) {
+                highFreqWindows++
+            } else if (windowZCR < 0.08f) {
+                lowFreqWindows++
             }
         }
 
-        // Ajustar energía alta según contenido real
-        highEnergy *= (0.5 + highFreqContent / 4.0)
+        val highFreqRatio = highFreqWindows / numWindows.toFloat()
+        val lowFreqRatio = lowFreqWindows / numWindows.toFloat()
 
-        // Normalizar
-        val sum = lowEnergy + midEnergy + highEnergy
-        if (sum > 0) {
-            lowEnergy /= sum
-            midEnergy /= sum
-            highEnergy /= sum
-        }
+        // ===== 5. ESTIMACIÓN DE BANDAS MEJORADA =====
+        var lowEnergy: Float
+        var midEnergy: Float
+        var highEnergy: Float
 
-        // Solo loguear cuando hay actividad significativa (evitar spam de 0,0)
-        // Y solo loguear UNA VEZ por análisis
-        if (totalEnergy > 0.0001) {
-            // NO loguear aquí - se logueará en FrequencyAnalysis
+        when {
+            // Caso 1: Altavoz típico (ZCR bajo, baja periodicidad)
+            zcr < 0.065f && periodicity < 0.3f -> {
+                lowEnergy = 0.75f
+                midEnergy = 0.20f
+                highEnergy = 0.05f
+            }
+
+            // Caso 2: Voz real (ZCR medio-alto, alta periodicidad)
+            zcr in 0.072f..0.35f && periodicity > 0.4f -> {
+                lowEnergy = 0.20f
+                midEnergy = 0.48f
+                highEnergy = 0.32f
+            }
+
+            // Caso 3: Posible mezcla (eco + voz)
+            zcr in 0.065f..0.15f -> {
+                // Usar ventanas para decidir
+                if (highFreqRatio > 0.5f) {
+                    // Más alta frecuencia = voz
+                    lowEnergy = 0.30f
+                    midEnergy = 0.45f
+                    highEnergy = 0.25f
+                } else {
+                    // Más baja frecuencia = altavoz
+                    lowEnergy = 0.60f
+                    midEnergy = 0.30f
+                    highEnergy = 0.10f
+                }
+            }
+
+            // Caso 4: Señal muy aguda o sibilante
+            zcr > 0.35f -> {
+                lowEnergy = 0.10f
+                midEnergy = 0.35f
+                highEnergy = 0.55f
+            }
+
+            // Caso 5: Por defecto
+            else -> {
+                lowEnergy = 0.40f
+                midEnergy = 0.40f
+                highEnergy = 0.20f
+            }
         }
 
         return FrequencyAnalysis(
-            lowBandEnergy = lowEnergy.toFloat(),
-            midBandEnergy = midEnergy.toFloat(),
-            highBandEnergy = highEnergy.toFloat(),
-            veryHighBandEnergy = 0f, // No usado en este método
-            zeroCrossingRate = zcr
+            lowBandEnergy = lowEnergy,
+            midBandEnergy = midEnergy,
+            highBandEnergy = highEnergy,
+            veryHighBandEnergy = 0f,
+            zeroCrossingRate = zcr,
+            periodicity = periodicity,
+            highFreqWindowRatio = highFreqRatio,
+            lowFreqWindowRatio = lowFreqRatio
         )
+    }
+
+    /**
+     * Calcula periodicidad usando autocorrelación simplificada.
+     * Valores altos (>0.5) indican señal periódica (voz estructurada).
+     * Valores bajos (<0.3) indican señal caótica (altavoz/ruido).
+     */
+    private fun calculatePeriodicity(samples: ShortArray, length: Int): Float {
+        if (length < 40) return 0f
+
+        // Buscar autocorrelación en el rango de pitch de voz (80-300Hz @ 16kHz)
+        val minLag = 50  // ~320Hz
+        val maxLag = 200 // ~80Hz
+
+        var maxCorr = 0.0
+        var energy = 0.0
+
+        // Calcular energía
+        for (i in 0 until length) {
+            val normalized = samples[i] / 32768.0
+            energy += normalized * normalized
+        }
+
+        if (energy < 1e-10) return 0f
+
+        // Buscar máxima autocorrelación
+        for (lag in minLag until minOf(maxLag, length / 2)) {
+            var corr = 0.0
+            val validLength = length - lag
+
+            for (i in 0 until validLength) {
+                val s1 = samples[i] / 32768.0
+                val s2 = samples[i + lag] / 32768.0
+                corr += s1 * s2
+            }
+
+            corr /= validLength
+            if (corr > maxCorr) {
+                maxCorr = corr
+            }
+        }
+
+        return (maxCorr / energy).toFloat().coerceIn(0f, 1f)
     }
 
     data class FrequencyAnalysis(
@@ -139,27 +206,38 @@ object AudioFilter {
         val midBandEnergy: Float,
         val highBandEnergy: Float,
         val veryHighBandEnergy: Float,
-        val zeroCrossingRate: Float = 0f
+        val zeroCrossingRate: Float = 0f,
+        val periodicity: Float = 0f,
+        val highFreqWindowRatio: Float = 0f,
+        val lowFreqWindowRatio: Float = 0f
     ) {
         /**
-         * Detectar si es eco del altavoz.
+         * Detecta si es eco del altavoz con MÚLTIPLES criterios.
+         * ✅ CRITERIOS MÁS ESTRICTOS - Solo rechazar casos muy obvios
          */
         fun isLikelySpeakerEcho(): Boolean {
-            // Criterio 1: ZCR muy bajo = graves = altavoz
-            if (zeroCrossingRate < 0.06f) { // Más estricto: antes 0.08
-                Timber.v("→ Speaker echo: Very low ZCR (${String.format("%.3f", zeroCrossingRate)})")
+            // Criterio 1: ZCR EXTREMADAMENTE bajo (solo altavoz puro)
+            if (zeroCrossingRate < 0.050f) {
                 return true
             }
 
-            // Criterio 2: Mucha energía en graves
-            if (lowBandEnergy > 0.55f) { // Más permisivo: antes 0.50
-                Timber.v("→ Speaker echo: High low energy (${String.format("%.0f%%", lowBandEnergy * 100)})")
+            // Criterio 2: Energía DOMINADA por graves (>70%)
+            if (lowBandEnergy > 0.70f) {
                 return true
             }
 
-            // Criterio 3: Poca energía en agudos
-            if (highBandEnergy < 0.08f && lowBandEnergy > 0.35f) { // Ajustado
-                Timber.v("→ Speaker echo: Low high energy (${String.format("%.0f%%", highBandEnergy * 100)})")
+            // Criterio 3: Casi SIN energía en agudos (<5%)
+            if (highBandEnergy < 0.05f && lowBandEnergy > 0.60f) {
+                return true
+            }
+
+            // Criterio 4: Baja periodicidad Y baja frecuencia (señal muy grave)
+            if (periodicity < 0.15f && zeroCrossingRate < 0.055f) {
+                return true
+            }
+
+            // Criterio 5: TODAS las ventanas con baja frecuencia
+            if (lowFreqWindowRatio > 0.90f) {
                 return true
             }
 
@@ -167,30 +245,33 @@ object AudioFilter {
         }
 
         /**
-         * Detectar voz humana real.
+         * Detecta voz humana real con MÚLTIPLES criterios.
+         * ✅ CRITERIOS ULTRA RELAJADOS - Aceptar prácticamente todo excepto altavoz obvio
          */
         fun isLikelyRealVoice(): Boolean {
-            // Criterio 1: ZCR moderado (relajado para tu micrófono)
-            if (zeroCrossingRate < 0.07f) { // Más permisivo: antes 0.10
-                Timber.v("→ Not voice: ZCR too low (${String.format("%.3f", zeroCrossingRate)})")
+            // Criterio 1: ZCR en rango AMPLIO (muy permisivo)
+            if (zeroCrossingRate < 0.055f) {  // Solo rechazar si es extremadamente bajo
                 return false
             }
 
-            // Criterio 2: Energía en medias-altas (más permisivo)
+            if (zeroCrossingRate > 0.50f) {  // Ampliar límite superior
+                return false
+            }
+
+            // Criterio 2: CUALQUIER energía en medias-altas (muy relajado)
             val combinedMidHigh = midBandEnergy + highBandEnergy
-            if (combinedMidHigh < 0.45f) { // Más permisivo: antes 0.50
-                Timber.v("→ Not voice: Low mid+high (${String.format("%.0f%%", combinedMidHigh * 100)})")
+            if (combinedMidHigh < 0.25f) {  // Reducido de 0.35f a 0.25f
                 return false
             }
 
-            // Criterio 3: No debe tener demasiados graves (más permisivo)
-            if (lowBandEnergy > 0.65f) { // Más permisivo: antes 0.60
-                Timber.v("→ Not voice: Too much low (${String.format("%.0f%%", lowBandEnergy * 100)})")
+            // Criterio 3: Solo rechazar si es TOTALMENTE graves
+            if (lowBandEnergy > 0.75f) {  // Aumentado de 0.65f a 0.75f
                 return false
             }
 
-            Timber.v("→ IS VOICE: ZCR=${String.format("%.3f", zeroCrossingRate)}, " +
-                    "mid+high=${String.format("%.0f%%", combinedMidHigh * 100)}")
+            // ✅ Periodicidad es COMPLETAMENTE OPCIONAL
+            // No importa el valor, no rechazamos por esto
+
             return true
         }
 
@@ -198,7 +279,9 @@ object AudioFilter {
             return "ZCR=${String.format("%.3f", zeroCrossingRate)}, " +
                     "L=${String.format("%.0f%%", lowBandEnergy * 100)}, " +
                     "M=${String.format("%.0f%%", midBandEnergy * 100)}, " +
-                    "H=${String.format("%.0f%%", highBandEnergy * 100)}"
+                    "H=${String.format("%.0f%%", highBandEnergy * 100)}, " +
+                    "period=${String.format("%.2f", periodicity)}, " +
+                    "hiWin=${String.format("%.0f%%", highFreqWindowRatio * 100)}"
         }
     }
 }

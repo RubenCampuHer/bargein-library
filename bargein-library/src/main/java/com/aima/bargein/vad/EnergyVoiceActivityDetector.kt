@@ -20,7 +20,7 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
     @Volatile
     private var isPlaybackActive = false
 
-    private var energyThresholdDb = -40f
+    private var energyThresholdDb = -38f
     private var noiseFloorDb = -60f
 
     private val energyHistory = FloatArray(HISTORY_SIZE)
@@ -29,12 +29,17 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
 
     companion object {
         private const val HISTORY_SIZE = 100
-        private const val VOICE_THRESHOLD_MARGIN_DB = 15f
-        private const val MIN_ENERGY_DB = -60f
-        private const val PLAYBACK_SUPPRESSION_DB = 12f // Más estricto durante reproducción
 
-        // Nuevo: contador de frames consecutivos
-        private const val MIN_CONSECUTIVE_VOICE_FRAMES = 2 // Necesita 2 frames seguidos
+        // ✅ THRESHOLDS RELAJADOS para mejor detección
+        private const val VOICE_THRESHOLD_MARGIN_DB = 8f  // Reducido de 12f a 8f
+        private const val MIN_ENERGY_DB = -60f
+        private const val PLAYBACK_SUPPRESSION_DB = 5f    // Reducido de 8f a 5f
+
+        // ✅ Requiere 2 frames consecutivos (20ms) para confirmar voz
+        private const val MIN_CONSECUTIVE_VOICE_FRAMES = 2
+
+        // ✅ Durante playback, rechazar si es MUY fuerte (probablemente altavoz)
+        private const val MAX_ENERGY_DURING_PLAYBACK_DB = -15f  // Relajado de -18f a -15f
     }
 
     private var consecutiveVoiceFrames = 0
@@ -42,26 +47,30 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
 
     // Control de logging para evitar spam
     private var lastLogTime = 0L
-    private val LOG_INTERVAL_MS = 500L // Logear cada 500ms (medio segundo)
+    private val LOG_INTERVAL_MS = 500L
 
     override fun initialize(
         sampleRate: Int,
         mode: IVoiceActivityDetector.AggressivenessMode
     ): Boolean {
         try {
+            // ✅ Thresholds más PERMISIVOS para mejor detección
             energyThresholdDb = when (mode) {
-                IVoiceActivityDetector.AggressivenessMode.QUALITY -> -40f
-                IVoiceActivityDetector.AggressivenessMode.LOW_BITRATE -> -35f
-                IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE -> -30f
-                IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE -> -25f
+                IVoiceActivityDetector.AggressivenessMode.QUALITY -> -42f         // Relajado
+                IVoiceActivityDetector.AggressivenessMode.LOW_BITRATE -> -35f     // Relajado
+                IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE -> -35f      // Relajado
+                IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE -> -38f // Muy relajado
             }
 
             isActive = true
-            Timber.i("Energy VAD initialized: threshold=${energyThresholdDb}dB, mode=$mode")
+            Timber.i("✅ Energy VAD initialized")
+            Timber.i("   Threshold: ${energyThresholdDb}dB")
+            Timber.i("   Mode: $mode")
+            Timber.i("   Consecutive frames required: $MIN_CONSECUTIVE_VOICE_FRAMES")
             return true
 
         } catch (e: Exception) {
-            Timber.e(e, "Error initializing Energy VAD")
+            Timber.e(e, "❌ Error initializing Energy VAD")
             return false
         }
     }
@@ -73,9 +82,10 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
             // Reset contadores al terminar reproducción
             consecutiveVoiceFrames = 0
             consecutiveRejectedFrames = 0
+            Timber.d("🔕 Playback ended - counters reset")
+        } else {
+            Timber.d("🔊 Playback started - stricter thresholds active")
         }
-
-        Timber.d("Playback active: $active")
     }
 
     override fun processFrame(audioData: ShortArray, length: Int): IVoiceActivityDetector.VadResult {
@@ -87,16 +97,16 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
 
         val startTime = System.nanoTime()
 
-        // ===== PASO 1: FILTRO PASO-ALTO =====
+        // ===== PASO 1: FILTRO PASO-ALTO (450Hz) =====
         val filteredSamples = audioData.copyOf()
         AudioFilter.applyHighPassFilter(
             samples = filteredSamples,
             length = length,
-            cutoffFreq = 300f, // Eliminar frecuencias < 300Hz
+            cutoffFreq = 450f, // ✅ Más agresivo
             sampleRate = 16000
         )
 
-        // ===== PASO 2: ANÁLISIS DE FRECUENCIAS (FFT REAL) =====
+        // ===== PASO 2: ANÁLISIS DE FRECUENCIAS MEJORADO =====
         val freqAnalysis = AudioFilter.analyzeFrequencyBands(
             samples = filteredSamples,
             length = length,
@@ -122,27 +132,30 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
             adaptiveThreshold += PLAYBACK_SUPPRESSION_DB
         }
 
+        // Nunca bajar del threshold base
+        adaptiveThreshold = adaptiveThreshold.coerceAtLeast(energyThresholdDb)
+
         // ===== PASO 5: DETECCIÓN CON FILTROS MÚLTIPLES =====
         var hasVoice = false
         var rejectionReason = ""
 
         // 5.1: Verificar energía suficiente
-        if (energyDb <= adaptiveThreshold.coerceAtLeast(energyThresholdDb)) {
-            rejectionReason = "Low energy"
+        if (energyDb <= adaptiveThreshold) {
+            rejectionReason = "Low energy (${String.format("%.1f", energyDb)}dB < ${String.format("%.1f", adaptiveThreshold)}dB)"
         }
-        // 5.2: CRÍTICO - Rechazar si es eco del altavoz
+        // 5.2: ✅ CRÍTICO - Rechazar si es eco del altavoz
         else if (freqAnalysis.isLikelySpeakerEcho()) {
-            rejectionReason = "Speaker echo detected"
+            rejectionReason = "Speaker echo [${freqAnalysis.getDebugInfo()}]"
             rejectedFrames.incrementAndGet()
         }
-        // 5.3: CRÍTICO - Debe ser voz real con frecuencias altas
+        // 5.3: ✅ CRÍTICO - Debe ser voz real
         else if (!freqAnalysis.isLikelyRealVoice()) {
-            rejectionReason = "No high frequencies"
+            rejectionReason = "Not voice pattern [${freqAnalysis.getDebugInfo()}]"
             rejectedFrames.incrementAndGet()
         }
-        // 5.4: Durante reproducción, rechazar energía EXCESIVA (probablemente altavoz)
-        else if (isPlaybackActive && energyDb > -15f) {
-            rejectionReason = "Too loud (${String.format("%.1f", energyDb)}dB)"
+        // 5.4: ✅ Durante playback, rechazar si es EXCESIVAMENTE fuerte
+        else if (isPlaybackActive && energyDb > MAX_ENERGY_DURING_PLAYBACK_DB) {
+            rejectionReason = "Too loud during playback (${String.format("%.1f", energyDb)}dB > ${MAX_ENERGY_DURING_PLAYBACK_DB}dB)"
             rejectedFrames.incrementAndGet()
         }
         // 5.5: TODO OK - Es voz real
@@ -158,48 +171,44 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
             consecutiveRejectedFrames++
         }
 
-        // NUEVO: Requiere frames consecutivos para confirmar voz
-        // Esto evita falsos positivos por ruido momentáneo
+        // ✅ NUEVO: Requiere frames consecutivos para confirmar voz
         val confirmedVoice = hasVoice && consecutiveVoiceFrames >= MIN_CONSECUTIVE_VOICE_FRAMES
 
-        // ===== PASO 6: LOGGING DETALLADO =====
-        if (energyDb > -30f || confirmedVoice) {
+        // ===== PASO 6: LOGGING CONTROLADO =====
+        val currentTime = System.currentTimeMillis()
+        val shouldLog = (currentTime - lastLogTime) >= LOG_INTERVAL_MS
+
+        if (shouldLog || confirmedVoice || energyDb > -30f) { // ✅ Log cuando hay energía significativa
             val debugInfo = freqAnalysis.getDebugInfo()
 
             if (confirmedVoice) {
-                Timber.d("✅ VOICE CONFIRMED [${consecutiveVoiceFrames}]: " +
-                        "energy=${String.format("%.1f", energyDb)}dB, " +
-                        "threshold=${String.format("%.1f", adaptiveThreshold)}dB, " +
-                        "playback=$isPlaybackActive | $debugInfo")
+                Timber.d("✅ VOICE CONFIRMED [frame #${consecutiveVoiceFrames}]")
+                Timber.d("   Energy: ${String.format("%.1f", energyDb)}dB (threshold: ${String.format("%.1f", adaptiveThreshold)}dB)")
+                Timber.d("   Playback: $isPlaybackActive")
+                Timber.d("   Analysis: $debugInfo")
                 voiceFrames.incrementAndGet()
-            } else if (rejectionReason.isNotEmpty()) {
-                Timber.v("❌ REJECTED ($rejectionReason): " +
-                        "energy=${String.format("%.1f", energyDb)}dB, " +
-                        "threshold=${String.format("%.1f", adaptiveThreshold)}dB, " +
-                        "playback=$isPlaybackActive | $debugInfo")
+            } else if (rejectionReason.isNotEmpty() && (energyDb > -35f || shouldLog)) {
+                // ✅ Log más detallado para debugging
+                Timber.v("❌ REJECTED: $rejectionReason")
+                if (energyDb > -30f) {
+                    Timber.v("   🔍 Debug: energyDb=${String.format("%.1f", energyDb)}, " +
+                            "noise=${String.format("%.1f", noiseFloorDb)}, " +
+                            "adaptThresh=${String.format("%.1f", adaptiveThreshold)}")
+                }
             }
+
+            lastLogTime = currentTime
         }
 
         // ===== PASO 7: CALCULAR CONFIANZA =====
         val confidence = if (confirmedVoice) {
-            val margin = energyDb - adaptiveThreshold
-            var baseConfidence = when {
-                margin > 20 -> 0.95f
-                margin > 15 -> 0.90f
-                margin > 10 -> 0.85f
-                margin > 5 -> 0.75f
-                else -> 0.65f
-            }
-
-            // Incrementar confianza por frames consecutivos
-            baseConfidence += (consecutiveVoiceFrames * 0.02f).coerceAtMost(0.15f)
-
-            // Penalización leve durante reproducción
-            if (isPlaybackActive) {
-                baseConfidence *= 0.95f
-            }
-
-            baseConfidence.coerceIn(0f, 1f)
+            calculateConfidence(
+                energyDb = energyDb,
+                threshold = adaptiveThreshold,
+                consecutiveFrames = consecutiveVoiceFrames,
+                freqAnalysis = freqAnalysis,
+                isPlaybackActive = isPlaybackActive
+            )
         } else {
             0.0f
         }
@@ -217,15 +226,64 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
         )
     }
 
+    /**
+     * ✅ Calcula confianza basándose en múltiples factores.
+     */
+    private fun calculateConfidence(
+        energyDb: Float,
+        threshold: Float,
+        consecutiveFrames: Int,
+        freqAnalysis: AudioFilter.FrequencyAnalysis,
+        isPlaybackActive: Boolean
+    ): Float {
+        // Base: margen sobre threshold
+        val margin = energyDb - threshold
+        var confidence = when {
+            margin > 20 -> 0.95f
+            margin > 15 -> 0.90f
+            margin > 10 -> 0.85f
+            margin > 5 -> 0.75f
+            else -> 0.65f
+        }
+
+        // Bonus por frames consecutivos (hasta +0.15)
+        confidence += (consecutiveFrames * 0.02f).coerceAtMost(0.15f)
+
+        // Bonus por periodicidad alta (voz estructurada)
+        if (freqAnalysis.periodicity > 0.5f) {
+            confidence += 0.05f
+        }
+
+        // Bonus por alto contenido de frecuencias altas
+        if (freqAnalysis.highBandEnergy > 0.25f) {
+            confidence += 0.05f
+        }
+
+        // Penalización durante playback
+        if (isPlaybackActive) {
+            confidence *= 0.90f
+        }
+
+        return confidence.coerceIn(0f, 1f)
+    }
+
     override fun release() {
         isActive = false
 
         val totalFrames = framesProcessed.get()
         val acceptedFrames = voiceFrames.get()
         val rejected = rejectedFrames.get()
+        val acceptanceRate = if (totalFrames > 0) {
+            (acceptedFrames * 100f / totalFrames)
+        } else {
+            0f
+        }
 
-        Timber.d("VAD Stats: total=$totalFrames, accepted=$acceptedFrames, rejected=$rejected")
-        Timber.d("Energy VAD released")
+        Timber.i("📊 VAD Final Stats:")
+        Timber.i("   Total frames: $totalFrames")
+        Timber.i("   Voice frames: $acceptedFrames (${String.format("%.1f%%", acceptanceRate)})")
+        Timber.i("   Rejected frames: $rejected")
+        Timber.d("🔧 Energy VAD released")
     }
 
     override fun getType(): IVoiceActivityDetector.Type =
@@ -253,6 +311,10 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
         )
     }
 
+    /**
+     * Calcula RMS (Root Mean Square) de la señal de audio.
+     * Normaliza los valores de 16-bit signed integer a [-1, 1].
+     */
     private fun calculateRMS(audioData: ShortArray, length: Int): Float {
         var sum = 0.0
         for (i in 0 until length) {
@@ -262,6 +324,10 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
         return sqrt(sum / length).toFloat()
     }
 
+    /**
+     * Mantiene un historial de los últimos N frames de energía
+     * para estimar el ruido de fondo adaptativo.
+     */
     private fun updateEnergyHistory(energyDb: Float) {
         energyHistory[historyIndex] = energyDb
         historyIndex = (historyIndex + 1) % HISTORY_SIZE
@@ -271,6 +337,10 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
         }
     }
 
+    /**
+     * Estima el ruido de fondo usando el percentil 25 del historial.
+     * Esto ignora picos ocasionales y captura el nivel base de ruido.
+     */
     private fun estimateNoiseFloor(): Float {
         val size = if (historyFilled) HISTORY_SIZE else historyIndex
         if (size == 0) return MIN_ENERGY_DB

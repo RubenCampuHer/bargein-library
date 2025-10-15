@@ -119,10 +119,11 @@ object AudioFilter {
             highEnergy /= sum
         }
 
-        Timber.v("ZCR: ${String.format("%.3f", zcr)}, " +
-                "L: ${String.format("%.2f", lowEnergy)}, " +
-                "M: ${String.format("%.2f", midEnergy)}, " +
-                "H: ${String.format("%.2f", highEnergy)}")
+        // Solo loguear cuando hay actividad significativa (evitar spam de 0,0)
+        // Y solo loguear UNA VEZ por análisis
+        if (totalEnergy > 0.0001) {
+            // NO loguear aquí - se logueará en FrequencyAnalysis
+        }
 
         return FrequencyAnalysis(
             lowBandEnergy = lowEnergy.toFloat(),
@@ -145,19 +146,19 @@ object AudioFilter {
          */
         fun isLikelySpeakerEcho(): Boolean {
             // Criterio 1: ZCR muy bajo = graves = altavoz
-            if (zeroCrossingRate < 0.08f) {
-                Timber.v("→ Speaker echo: Low ZCR (${String.format("%.3f", zeroCrossingRate)})")
+            if (zeroCrossingRate < 0.06f) { // Más estricto: antes 0.08
+                Timber.v("→ Speaker echo: Very low ZCR (${String.format("%.3f", zeroCrossingRate)})")
                 return true
             }
 
             // Criterio 2: Mucha energía en graves
-            if (lowBandEnergy > 0.50f) {
+            if (lowBandEnergy > 0.55f) { // Más permisivo: antes 0.50
                 Timber.v("→ Speaker echo: High low energy (${String.format("%.0f%%", lowBandEnergy * 100)})")
                 return true
             }
 
             // Criterio 3: Poca energía en agudos
-            if (highBandEnergy < 0.10f && lowBandEnergy > 0.30f) {
+            if (highBandEnergy < 0.08f && lowBandEnergy > 0.35f) { // Ajustado
                 Timber.v("→ Speaker echo: Low high energy (${String.format("%.0f%%", highBandEnergy * 100)})")
                 return true
             }
@@ -169,21 +170,21 @@ object AudioFilter {
          * Detectar voz humana real.
          */
         fun isLikelyRealVoice(): Boolean {
-            // Criterio 1: ZCR moderado-alto
-            if (zeroCrossingRate < 0.10f) {
+            // Criterio 1: ZCR moderado (relajado para tu micrófono)
+            if (zeroCrossingRate < 0.07f) { // Más permisivo: antes 0.10
                 Timber.v("→ Not voice: ZCR too low (${String.format("%.3f", zeroCrossingRate)})")
                 return false
             }
 
-            // Criterio 2: Energía en medias-altas
+            // Criterio 2: Energía en medias-altas (más permisivo)
             val combinedMidHigh = midBandEnergy + highBandEnergy
-            if (combinedMidHigh < 0.50f) {
+            if (combinedMidHigh < 0.45f) { // Más permisivo: antes 0.50
                 Timber.v("→ Not voice: Low mid+high (${String.format("%.0f%%", combinedMidHigh * 100)})")
                 return false
             }
 
-            // Criterio 3: No debe tener demasiados graves
-            if (lowBandEnergy > 0.60f) {
+            // Criterio 3: No debe tener demasiados graves (más permisivo)
+            if (lowBandEnergy > 0.65f) { // Más permisivo: antes 0.60
                 Timber.v("→ Not voice: Too much low (${String.format("%.0f%%", lowBandEnergy * 100)})")
                 return false
             }

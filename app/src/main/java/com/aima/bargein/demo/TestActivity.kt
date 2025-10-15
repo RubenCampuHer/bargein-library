@@ -1,364 +1,781 @@
 package com.aima.bargein.demo
 
 import android.Manifest
-import android.animation.ArgbEvaluator
-import android.animation.ValueAnimator
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
-import android.os.*
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
-import android.view.View
-import android.view.animation.DecelerateInterpolator
-import android.widget.*
-import androidx.annotation.RequiresPermission
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.aima.bargein.*
+import com.aima.bargein.BargeInConfig
+import com.aima.bargein.BargeInEngine
+import com.aima.bargein.BargeInError
+import com.aima.bargein.BargeInEvent
+import com.aima.bargein.BargeInListener
+import com.aima.bargein.BargeInState
 import com.aima.bargein.vad.IVoiceActivityDetector
-import com.aima.bargein.vad.SpectralVoiceActivityDetector
 import timber.log.Timber
 import java.io.File
-import java.io.FileInputStream
-import java.util.*
+import java.io.FileOutputStream
 
 class TestActivity : AppCompatActivity(), BargeInListener {
 
     private lateinit var engine: BargeInEngine
-    private lateinit var tts: TextToSpeech
 
-    private lateinit var statusView: TextView
-    private lateinit var levelBar: ProgressBar
-    private lateinit var infoText: TextView
-    private lateinit var freqText: TextView
-    private lateinit var btnInit: Button
-    private lateinit var btnGenerate: Button
-    private lateinit var btnTest: Button
-    private lateinit var btnStop: Button
+    // UI Components
+    private lateinit var statusText: TextView
+    private lateinit var audioLevelText: TextView
+    private lateinit var audioLevelBar: ProgressBar
+    private lateinit var frequencyInfoText: TextView
+    private lateinit var btnPlayTest: Button
+    private lateinit var btnStopTest: Button
+    private lateinit var btnModeSuperSensitive: Button
+    private lateinit var btnModeSensitive: Button
+    private lateinit var btnModeNormal: Button
 
-    private var ttsReady = false
     private var wavFile: File? = null
-    private var colorAnimator: ValueAnimator? = null
+    private var isTestRunning = false
+
+    // Modos de sensibilidad
+    private enum class SensitivityMode {
+        SUPER_SENSITIVE,  // Muy fácil de activar
+        SENSITIVE,        // Equilibrado
+        NORMAL            // Más estricto
+    }
+
+    private var currentMode = SensitivityMode.SENSITIVE
+
+    private val handler = Handler(Looper.getMainLooper())
 
     companion object {
-        private const val PERMISSION_CODE = 100
+        private const val PERMISSION_REQUEST_CODE = 100
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         Timber.plant(Timber.DebugTree())
+        Timber.i("🚀 TestActivity started - Auto-initialization mode")
 
-        // Fondo con gradiente azul → blanco
-        val bg = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(Color.parseColor("#E3F2FD"), Color.WHITE)
-        )
+        setupUI()
+        checkPermissions()
+    }
 
+    private fun setupUI() {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            background = bg
-            setPadding(48, 64, 48, 64)
+            setPadding(24, 24, 24, 24)
+            setBackgroundColor(Color.WHITE)
         }
 
-        // ======= Título =======
-        val title = TextView(this).apply {
-            text = "🎙️ Barge-In Demo"
-            textSize = 28f
-            setTextColor(Color.parseColor("#0D47A1"))
+        // ===== TÍTULO =====
+        layout.addView(TextView(this).apply {
+            text = "🎤 Barge-In Live Monitor"
+            textSize = 24f
+            setTextColor(Color.parseColor("#1976D2"))
             gravity = Gravity.CENTER
-        }
+            setPadding(0, 0, 0, 16)
+        })
 
-        // ======= Estado =======
-        statusView = TextView(this).apply {
-            text = "Esperando permisos..."
-            textSize = 18f
+        layout.addView(TextView(this).apply {
+            text = "Micrófono siempre activo • ZCR Method"
+            textSize = 14f
+            setTextColor(Color.parseColor("#757575"))
             gravity = Gravity.CENTER
-            setPadding(0, 32, 0, 16)
+            setPadding(0, 0, 0, 24)
+        })
+
+        // ===== MEDIDOR DE NIVEL DE AUDIO =====
+        val audioContainer = createCard()
+
+        audioLevelText = TextView(this).apply {
+            text = "🔇 Inicializando..."
+            textSize = 16f
+            setTextColor(Color.parseColor("#212121"))
+            setPadding(0, 0, 0, 12)
         }
 
-        // ======= Barra de audio =======
-        levelBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+        audioLevelBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
             progress = 0
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                48
-            ).apply { setMargins(0, 24, 0, 24) }
-            progressDrawable = ContextCompat.getDrawable(this@TestActivity, android.R.drawable.progress_horizontal)
+                60
+            ).apply {
+                setMargins(0, 0, 0, 12)
+            }
         }
 
-        infoText = TextView(this).apply {
-            text = "🔇 Nivel: -- dB | Confianza: --"
-            textSize = 16f
-            gravity = Gravity.CENTER
+        val metricsText = TextView(this).apply {
+            text = "Esperando datos..."
+            textSize = 13f
+            setTextColor(Color.parseColor("#616161"))
+            setPadding(0, 0, 0, 8)
         }
 
-        freqText = TextView(this).apply {
-            text = "🎧 Frecuencias altas: --%"
+        val zcrInfoText = TextView(this).apply {
+            text = """
+                ZCR (Zero-Crossing Rate):
+                • Alto (>0.15) = Voz real ✅
+                • Bajo (<0.08) = Altavoz/graves ❌
+            """.trimIndent()
+            textSize = 12f
+            setTextColor(Color.parseColor("#757575"))
+        }
+
+        // Guardar referencia global
+        frequencyInfoText = metricsText
+
+        audioContainer.addView(audioLevelText)
+        audioContainer.addView(audioLevelBar)
+        audioContainer.addView(metricsText)
+        audioContainer.addView(zcrInfoText)
+        layout.addView(audioContainer)
+
+        // ===== STATUS =====
+        statusText = TextView(this).apply {
+            text = "Verificando permisos..."
             textSize = 14f
+            setTextColor(Color.parseColor("#424242"))
             gravity = Gravity.CENTER
-            setTextColor(Color.DKGRAY)
-            setPadding(0, 8, 0, 32)
+            setPadding(16, 20, 16, 10)
+        }
+        layout.addView(statusText)
+
+        // ===== SELECTOR DE MODO =====
+        val modeContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16, 10, 16, 10)
+            setBackgroundColor(Color.parseColor("#FFF3E0"))
         }
 
-        // ======= Botones =======
-        val btnStyle: (String) -> Button = { text ->
-            Button(this).apply {
-                this.text = text
-                textSize = 16f
-                setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#1976D2"))
-                stateListAnimator = null
-            }
+        modeContainer.addView(TextView(this).apply {
+            text = "🎚️ MODO DE SENSIBILIDAD"
+            textSize = 14f
+            setTextColor(Color.parseColor("#E65100"))
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 8)
+        })
+
+        val modeButtonsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         }
 
-        btnInit = btnStyle("1️⃣ Inicializar Motor").apply {
-            setOnClickListener { initializeEngine() }
+        btnModeSuperSensitive = createModeButton("🔴 Super", Color.parseColor("#F44336")) {
+            changeSensitivityMode(SensitivityMode.SUPER_SENSITIVE)
         }
 
-        btnGenerate = btnStyle("2️⃣ Generar WAV").apply {
-            isEnabled = false
-            setOnClickListener { generateWavFile() }
+        btnModeSensitive = createModeButton("🟡 Sensible", Color.parseColor("#FF9800")) {
+            changeSensitivityMode(SensitivityMode.SENSITIVE)
         }
 
-        btnTest = btnStyle("3️⃣ Reproducir + Detectar").apply {
-            isEnabled = false
-            setOnClickListener {
-                // ✅ Comprobamos permiso antes de usar el micrófono
-                if (ContextCompat.checkSelfPermission(
-                        this@TestActivity,
-                        Manifest.permission.RECORD_AUDIO
-                    ) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    startTest()
-                } else {
-                    // ❌ Sin permiso → mostramos aviso y pedimos permiso de nuevo
-                    statusView.text = "⚠️ Permiso de micrófono no concedido"
-                    ActivityCompat.requestPermissions(
-                        this@TestActivity,
-                        arrayOf(Manifest.permission.RECORD_AUDIO),
-                        PERMISSION_CODE
-                    )
-                }
-            }
+        btnModeNormal = createModeButton("🟢 Normal", Color.parseColor("#4CAF50")) {
+            changeSensitivityMode(SensitivityMode.NORMAL)
         }
 
+        modeButtonsRow.addView(btnModeSuperSensitive)
+        modeButtonsRow.addView(btnModeSensitive)
+        modeButtonsRow.addView(btnModeNormal)
 
-        btnStop = btnStyle("⏹️ Detener").apply {
-            isEnabled = false
-            setBackgroundColor(Color.parseColor("#C62828"))
-            setOnClickListener { stopTest() }
+        modeContainer.addView(modeButtonsRow)
+        layout.addView(modeContainer)
+
+        // ===== BOTONES DE CONTROL =====
+        btnPlayTest = createButton(
+            "▶️ INICIAR TEST (Reproduce Audio)",
+            Color.parseColor("#4CAF50"),
+            false
+        ) {
+            startBargeInTest()
         }
+        layout.addView(btnPlayTest)
 
-        layout.addView(title)
-        layout.addView(statusView)
-        layout.addView(levelBar)
-        layout.addView(infoText)
-        layout.addView(freqText)
-        layout.addView(btnInit)
-        layout.addView(btnGenerate)
-        layout.addView(btnTest)
-        layout.addView(btnStop)
+        btnStopTest = createButton(
+            "⏹️ DETENER TEST",
+            Color.parseColor("#F44336"),
+            false
+        ) {
+            stopBargeInTest()
+        }
+        layout.addView(btnStopTest)
 
         setContentView(layout)
-
-        initTts()
-        checkPermissions()
-        startUiUpdater()
     }
 
-    private fun initTts() {
-        tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                tts.language = Locale("es", "ES")
-                ttsReady = true
-                Timber.i("TTS ready")
+    private fun createCard(): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(20, 20, 20, 20)
+            setBackgroundColor(Color.parseColor("#E3F2FD"))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 0, 0, 16)
             }
         }
-        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {}
-            override fun onDone(utteranceId: String?) {
-                runOnUiThread {
-                    statusView.text = "✅ WAV generado. Listo para probar."
-                    btnTest.isEnabled = true
-                }
+    }
+
+    private fun createButton(text: String, color: Int, enabled: Boolean, onClick: () -> Unit): Button {
+        return Button(this).apply {
+            this.text = text
+            textSize = 15f
+            setBackgroundColor(color)
+            setTextColor(Color.WHITE)
+            isEnabled = enabled
+            setPadding(20, 32, 20, 32)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 8, 0, 8)
             }
-            override fun onError(utteranceId: String?) {}
-        })
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun createModeButton(text: String, color: Int, onClick: () -> Unit): Button {
+        return Button(this).apply {
+            this.text = text
+            textSize = 12f
+            setBackgroundColor(color)
+            setTextColor(Color.WHITE)
+            setPadding(8, 24, 8, 24)
+            layoutParams = LinearLayout.LayoutParams(
+                0,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                1f
+            ).apply {
+                setMargins(4, 0, 4, 0)
+            }
+            setOnClickListener { onClick() }
+        }
     }
 
     private fun checkPermissions() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), PERMISSION_CODE)
+            != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                PERMISSION_REQUEST_CODE
+            )
         } else {
             onPermissionsGranted()
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_CODE &&
-            grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-        ) onPermissionsGranted()
-        else statusView.text = "❌ Sin permiso de micrófono"
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                onPermissionsGranted()
+            } else {
+                statusText.text = "❌ Permiso de micrófono denegado\n\nLa aplicación no puede funcionar"
+                Timber.e("Permission denied")
+            }
+        }
     }
 
     private fun onPermissionsGranted() {
-        statusView.text = "✅ Permiso de micrófono concedido"
-        btnInit.isEnabled = true
-    }
+        Timber.i("✅ Permissions granted - Starting auto-initialization")
 
-    // === Inicializar motor ===
-    private fun initializeEngine() {
-        try {
-            statusView.text = "⏳ Inicializando..."
-            val config = BargeInConfig(
-                sampleRate = 16000,
-                vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
-                minVoiceDurationMs = 150,
-                voiceConfidenceThreshold = 0.5f,
-                highBandMinHz = 2800,
-                highBandMaxHz = 7000,
-                highRatioThreshold = 0.12f
-            )
-            engine = BargeInEngine(applicationContext, config, this)
-            engine.initialize()
-            statusView.text = "✅ Motor listo\nHabla para probar detección"
-            btnInit.isEnabled = false
-            btnGenerate.isEnabled = true
-        } catch (e: Exception) {
-            statusView.text = "❌ Error: ${e.message}"
-        }
-    }
-
-    // === Generar WAV ===
-    private fun generateWavFile() {
-        if (!ttsReady) {
-            statusView.text = "⚠️ TTS no listo"
-            return
-        }
-
-        wavFile = File(cacheDir, "demo.wav")
-        val text = """
-            Hola, soy AiMA. Estoy hablando para probar la detección de interrupción.
-            Dime algo y te escucharé.
-        """.trimIndent()
-        val params = Bundle()
-        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "wavgen")
-        statusView.text = "⏳ Generando audio..."
-        btnGenerate.isEnabled = false
-        tts.synthesizeToFile(text, params, wavFile, "wavgen")
-    }
-
-    // === Reproducir WAV y escuchar ===
-    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
-    private fun startTest() {
-        if (wavFile == null || !wavFile!!.exists()) {
-            statusView.text = "❌ No hay archivo WAV"
-            return
-        }
+        statusText.text = "⏳ Inicializando automáticamente..."
 
         try {
-            statusView.text = "🎧 Reproduciendo y escuchando...\nHabla para interrumpir."
-            btnTest.isEnabled = false
-            btnStop.isEnabled = true
+            // Copiar/generar WAV
+            copyWavFromAssets()
 
-            val inputStream = FileInputStream(wavFile)
-            engine.startListening()
-            engine.playAudio(inputStream)
+            // Inicializar engine con modo por defecto (SENSITIVE)
+            currentMode = SensitivityMode.SENSITIVE
+            updateModeButtons()
+            initializeEngine()
+
+            // Iniciar monitoreo automático
+            startAutoMonitoring()
+
         } catch (e: Exception) {
-            statusView.text = "❌ Error: ${e.message}"
-        }
-    }
-
-    private fun stopTest() {
-        try {
-            val stopped = engine.forceStopPlayback()
-            if (stopped) {
-                statusView.text = "⏹️ Audio detenido (mic sigue activo)"
-                Timber.i("🎧 Playback stopped manually, mic still active")
-            } else {
-                statusView.text = "⚠️ No había audio reproduciéndose"
-            }
-            btnStop.isEnabled = false
-            btnTest.isEnabled = true
-        } catch (e: Exception) {
-            Timber.e(e, "Error stopping playback")
-        }
-    }
-
-
-    // === UI Updater ===
-    private fun startUiUpdater() {
-        val handler = Handler(mainLooper)
-        handler.post(object : Runnable {
-            override fun run() {
-                updateVisualizer()
-                handler.postDelayed(this, 120)
-            }
-        })
-    }
-
-    private fun updateVisualizer() {
-        if (!::engine.isInitialized) return
-        val conf = engine.lastConfidence.coerceIn(0f, 1f)
-
-        val db = -60f + (conf * 60f)
-        val progress = ((db + 60f) * 100 / 60f).toInt()
-
-        levelBar.progress = progress
-        val color = ArgbEvaluator().evaluate(conf, Color.parseColor("#1976D2"), Color.parseColor("#4CAF50")) as Int
-        levelBar.progressTintList = android.content.res.ColorStateList.valueOf(color)
-
-        infoText.text = "🎚️ Nivel: ${"%.1f".format(db)} dB | Confianza: ${"%.2f".format(conf)}"
-        freqText.text = if (conf > 0.12f) "🎧 Alta energía detectada (${(conf * 100).toInt()}%)"
-        else "🔇 Esperando voz..."
-    }
-
-    // === BargeInListener ===
-    override fun onUserInterruption(event: BargeInEvent) {
-        runOnUiThread {
-            animateStatus("🚨 Interrupción detectada", "#4CAF50")
-            btnStop.isEnabled = false
-            btnTest.isEnabled = true
-            statusView.text = """
-                ✅ Interrupción: ${"%.0f".format(event.latencyMs)} ms
-                Confianza ${(event.confidence * 100).toInt()}%
+            Timber.e(e, "Error in auto-initialization")
+            statusText.text = """
+                ❌ Error al inicializar
+                
+                ${e.message}
+                
+                Por favor revisa los logs
             """.trimIndent()
         }
     }
 
+    private fun copyWavFromAssets() {
+        try {
+            wavFile = File(cacheDir, "test_audio.wav")
+
+            // Si ya existe, usarlo
+            if (wavFile!!.exists()) {
+                Timber.i("✅ WAV file already exists: ${wavFile!!.absolutePath}")
+                return
+            }
+
+            // Intentar copiar desde assets
+            try {
+                val assetManager = assets
+                val inputStream = assetManager.open("test_audio.wav")
+                val outputStream = FileOutputStream(wavFile)
+
+                val buffer = ByteArray(1024)
+                var read: Int
+                while (inputStream.read(buffer).also { read = it } != -1) {
+                    outputStream.write(buffer, 0, read)
+                }
+
+                inputStream.close()
+                outputStream.flush()
+                outputStream.close()
+
+                Timber.i("✅ WAV file copied from assets: ${wavFile!!.absolutePath}")
+
+            } catch (e: Exception) {
+                // Si no existe en assets, generar uno sintético
+                Timber.w("WAV not in assets, generating synthetic audio...")
+                WavGenerator.generateTestWav(wavFile!!, durationSeconds = 15)
+                Timber.i("✅ WAV file generated: ${wavFile!!.absolutePath}")
+            }
+
+        } catch (e: Exception) {
+            Timber.e(e, "Error preparing WAV file")
+            wavFile = null
+        }
+    }
+
+    private fun initializeEngine() {
+        try {
+            Timber.i("🔧 Initializing BargeInEngine with mode: $currentMode")
+
+            val config = getConfigForMode(currentMode)
+
+            engine = BargeInEngine(
+                context = applicationContext,
+                config = config,
+                listener = this
+            )
+
+            engine.initialize()
+
+            Timber.i("✅ Engine initialized successfully with mode: $currentMode")
+
+        } catch (e: Exception) {
+            statusText.text = """
+                ❌ Error al inicializar motor
+                
+                ${e.message}
+                
+                ${if (e.message?.contains("AEC") == true)
+                "Nota: Algunos dispositivos no soportan AEC nativo"
+            else ""}
+            """.trimIndent()
+
+            Timber.e(e, "Engine initialization failed")
+            throw e
+        }
+    }
+
+    private fun getConfigForMode(mode: SensitivityMode): BargeInConfig {
+        return when (mode) {
+            SensitivityMode.SUPER_SENSITIVE -> BargeInConfig(
+                sampleRate = 16000,
+                vadMode = IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE,
+                minVoiceDurationMs = 50,  // 50ms = ~5 frames (MUY rápido)
+                voiceConfidenceThreshold = 0.45f // Muy permisivo
+            )
+
+            SensitivityMode.SENSITIVE -> BargeInConfig(
+                sampleRate = 16000,
+                vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
+                minVoiceDurationMs = 100, // 100ms = ~10 frames (Rápido)
+                voiceConfidenceThreshold = 0.55f // Permisivo
+            )
+
+            SensitivityMode.NORMAL -> BargeInConfig(
+                sampleRate = 16000,
+                vadMode = IVoiceActivityDetector.AggressivenessMode.LOW_BITRATE,
+                minVoiceDurationMs = 150, // 150ms = ~15 frames (Normal)
+                voiceConfidenceThreshold = 0.65f // Más estricto
+            )
+        }
+    }
+
+    private fun changeSensitivityMode(newMode: SensitivityMode) {
+        if (!::engine.isInitialized) {
+            Timber.w("Engine not initialized yet")
+            return
+        }
+
+        if (isTestRunning) {
+            statusText.text = "⚠️ Detén el test antes de cambiar el modo"
+            return
+        }
+
+        currentMode = newMode
+
+        // Actualizar UI de botones
+        updateModeButtons()
+
+        // Reinicializar engine con nuevo modo
+        try {
+            Timber.i("🔄 Changing mode to: $newMode")
+
+            val wasListening = engine.getMetrics().isListening
+
+            // Release engine actual
+            engine.release()
+
+            // Crear nuevo engine con nueva configuración
+            initializeEngine()
+
+            // Reanudar escucha si estaba activo
+            if (wasListening) {
+                startAutoMonitoring()
+            }
+
+            val modeText = when (newMode) {
+                SensitivityMode.SUPER_SENSITIVE -> "🔴 SUPER SENSIBLE\n50ms • Muy fácil de activar"
+                SensitivityMode.SENSITIVE -> "🟡 SENSIBLE\n100ms • Equilibrado"
+                SensitivityMode.NORMAL -> "🟢 NORMAL\n150ms • Más estricto"
+            }
+
+            statusText.text = """
+                ✅ Modo cambiado
+                
+                $modeText
+                
+                🎤 Micrófono activo
+            """.trimIndent()
+
+            Timber.i("✅ Mode changed successfully to: $newMode")
+
+        } catch (e: Exception) {
+            statusText.text = "❌ Error cambiando modo:\n${e.message}"
+            Timber.e(e, "Failed to change mode")
+        }
+    }
+
+    private fun updateModeButtons() {
+        // Reset todos los botones
+        btnModeSuperSensitive.alpha = 0.5f
+        btnModeSensitive.alpha = 0.5f
+        btnModeNormal.alpha = 0.5f
+
+        // Destacar el modo actual
+        when (currentMode) {
+            SensitivityMode.SUPER_SENSITIVE -> btnModeSuperSensitive.alpha = 1.0f
+            SensitivityMode.SENSITIVE -> btnModeSensitive.alpha = 1.0f
+            SensitivityMode.NORMAL -> btnModeNormal.alpha = 1.0f
+        }
+    }
+
+    @Suppress("MissingPermission")
+    private fun startAutoMonitoring() {
+        // Verificar permiso antes de iniciar
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) {
+            statusText.text = "❌ No hay permiso de micrófono"
+            return
+        }
+
+        try {
+            engine.startListening()
+
+            statusText.text = """
+                ✅ Sistema activo
+                
+                🎤 Micrófono: ESCUCHANDO
+                📊 Analizando continuamente
+                
+                Presiona "INICIAR TEST" para probar
+            """.trimIndent()
+
+            btnPlayTest.isEnabled = true
+
+            // Iniciar actualización de UI
+            startUIUpdates()
+
+            Timber.i("✅ Auto-monitoring started")
+
+        } catch (e: SecurityException) {
+            statusText.text = "❌ Error de permisos:\n${e.message}"
+            Timber.e(e, "Permission error")
+        } catch (e: Exception) {
+            statusText.text = "❌ Error iniciando monitoreo:\n${e.message}"
+            Timber.e(e, "Failed to start monitoring")
+        }
+    }
+
+    private fun startUIUpdates() {
+        val updateRunnable = object : Runnable {
+            override fun run() {
+                updateAudioVisualizer()
+                handler.postDelayed(this, 50) // Actualizar cada 50ms para más fluidez
+            }
+        }
+        handler.post(updateRunnable)
+    }
+
+    private fun updateAudioVisualizer() {
+        if (!::engine.isInitialized) return
+
+        try {
+            val metrics = engine.getMetrics()
+            val vadMetrics = metrics.vadMetrics ?: return
+
+            val totalFrames = vadMetrics.framesProcessed.toFloat()
+            if (totalFrames == 0f) return
+
+            val voiceRatio = vadMetrics.voiceFrames.toFloat() / totalFrames
+            val avgConfidence = vadMetrics.averageConfidence
+
+            // Calcular nivel de dB
+            val estimatedDb = -60f + (avgConfidence * 60f)
+            val barProgress = ((estimatedDb + 60f) * 100f / 60f).toInt().coerceIn(0, 100)
+
+            // Actualizar barra de progreso
+            audioLevelBar.progress = barProgress
+
+            // Color según nivel
+            val color = when {
+                barProgress > 70 -> Color.parseColor("#4CAF50") // Verde - FUERTE
+                barProgress > 50 -> Color.parseColor("#8BC34A") // Verde claro
+                barProgress > 30 -> Color.parseColor("#FFC107") // Amarillo
+                barProgress > 15 -> Color.parseColor("#FF9800") // Naranja
+                else -> Color.parseColor("#F44336") // Rojo - BAJO
+            }
+            audioLevelBar.progressTintList = android.content.res.ColorStateList.valueOf(color)
+
+            // Icono según nivel
+            val icon = when {
+                barProgress > 70 -> "🔊"
+                barProgress > 50 -> "🔉"
+                barProgress > 30 -> "🔉"
+                barProgress > 10 -> "🔈"
+                else -> "🔇"
+            }
+
+            audioLevelText.text = "$icon Audio: ${String.format("%.1f", estimatedDb)} dB | " +
+                    "Confianza: ${String.format("%.2f", avgConfidence)}"
+
+            // Métricas detalladas
+            val stateEmoji = when (metrics.state) {
+                BargeInState.IDLE -> "💤"
+                BargeInState.LISTENING -> "🎤"
+                BargeInState.INTERRUPTED -> "🚨"
+                BargeInState.STOPPED -> "⏸️"
+                BargeInState.ERROR -> "❌"
+            }
+
+            val listeningStatus = if (metrics.isListening) "🟢 ACTIVO" else "🔴 INACTIVO"
+            val playingStatus = if (metrics.isPlaying) "🟢 SÍ" else "⚪ NO"
+
+            frequencyInfoText.text = """
+                📊 Frames: ${vadMetrics.framesProcessed} | Voz: ${vadMetrics.voiceFrames} (${String.format("%.1f", voiceRatio * 100)}%)
+                ⏱️ Proc: ${vadMetrics.averageProcessingTimeUs}µs/frame
+                🎯 Estado: $stateEmoji ${metrics.state} | Mic: $listeningStatus | Audio: $playingStatus
+            """.trimIndent()
+
+        } catch (e: Exception) {
+            Timber.e(e, "Error updating visualizer")
+        }
+    }
+
+    @Suppress("MissingPermission")
+    private fun startBargeInTest() {
+        if (wavFile == null || !wavFile!!.exists()) {
+            statusText.text = """
+                ❌ No hay archivo de audio
+                
+                Error generando el WAV
+                Revisa los logs
+            """.trimIndent()
+            return
+        }
+
+        if (isTestRunning) {
+            Timber.w("Test already running")
+            return
+        }
+
+        // Verificar permiso antes de reproducir
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) {
+            statusText.text = "❌ No hay permiso de micrófono"
+            return
+        }
+
+        try {
+            isTestRunning = true
+
+            statusText.text = """
+                🎵 REPRODUCIENDO AUDIO
+                
+                ¡Interrumpe hablando FUERTE!
+                
+                Observa:
+                • Barra de nivel de audio
+                • Métricas en tiempo real
+                • Logs con ZCR
+            """.trimIndent()
+
+            btnPlayTest.isEnabled = false
+            btnStopTest.isEnabled = true
+
+            val inputStream = wavFile!!.inputStream()
+            engine.playAudio(inputStream)
+
+            Timber.i("▶️ Barge-in test started")
+
+        } catch (e: SecurityException) {
+            statusText.text = "❌ Error de permisos:\n${e.message}"
+            isTestRunning = false
+            btnPlayTest.isEnabled = true
+            btnStopTest.isEnabled = false
+            Timber.e(e, "Permission error")
+        } catch (e: Exception) {
+            statusText.text = "❌ Error iniciando test:\n${e.message}"
+            isTestRunning = false
+            btnPlayTest.isEnabled = true
+            btnStopTest.isEnabled = false
+            Timber.e(e, "Failed to start test")
+        }
+    }
+
+    private fun stopBargeInTest() {
+        if (!isTestRunning) {
+            Timber.w("No test running")
+            return
+        }
+
+        try {
+            Timber.i("🛑 User requested to stop audio...")
+
+            // Detener solo el audio, mantener micrófono activo
+            engine.stopAudioPlayback()
+
+            isTestRunning = false
+
+            statusText.text = """
+                ⏸️ Audio detenido manualmente
+                
+                🎤 Micrófono: Sigue activo
+                📊 Monitoreando continuamente
+                
+                Puedes iniciar otro test
+            """.trimIndent()
+
+            btnPlayTest.isEnabled = true
+            btnStopTest.isEnabled = false
+
+            Timber.i("✅ Audio stopped, microphone remains active")
+
+        } catch (e: Exception) {
+            statusText.text = "❌ Error deteniendo:\n${e.message}"
+            Timber.e(e, "Error stopping audio")
+        }
+    }
+
+    // ========== BargeInListener ==========
+
+    @Suppress("MissingPermission")
+    override fun onUserInterruption(event: BargeInEvent) {
+        runOnUiThread {
+            isTestRunning = false
+
+            val latencyOk = event.latencyMs < 300
+            val emoji = if (latencyOk) "✅" else "⚠️"
+            val colorIndicator = if (latencyOk) "🟢" else "🟡"
+
+            statusText.text = """
+                🎉 ¡BARGE-IN DETECTADO!
+                
+                $emoji Latencia: ${String.format("%.0f", event.latencyMs)} ms $colorIndicator
+                📊 Confianza: ${String.format("%.0f", event.confidence * 100)}%
+                🔊 Energía: ${String.format("%.1f", event.energyDb)} dB
+                
+                ${if (latencyOk) "¡Excelente respuesta! <300ms" else "Mejorable (>300ms)"}
+                
+                🎤 Micrófono sigue activo
+            """.trimIndent()
+
+            btnPlayTest.isEnabled = true
+            btnStopTest.isEnabled = false
+
+            // Auto-reanudar monitoreo con verificación de permisos
+            handler.postDelayed({
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                    == PackageManager.PERMISSION_GRANTED) {
+                    try {
+                        engine.startListening()
+                    } catch (e: Exception) {
+                        Timber.e(e, "Error resuming monitoring")
+                    }
+                }
+            }, 100)
+        }
+
+        Timber.i("🎉 BARGE-IN! latency=${String.format("%.1f", event.latencyMs)}ms, " +
+                "conf=${String.format("%.0f", event.confidence * 100)}%%, " +
+                "energy=${String.format("%.1f", event.energyDb)}dB")
+    }
+
     override fun onStateChanged(state: BargeInState) {
-        Timber.d("State: $state")
+        Timber.d("📊 State: $state")
     }
 
     override fun onError(error: BargeInError) {
-        runOnUiThread { animateStatus("❌ Error: ${error.code}", "#C62828") }
-    }
+        runOnUiThread {
+            statusText.text = """
+                ❌ ERROR
+                
+                ${error.code}
+                ${error.message}
+            """.trimIndent()
 
-    private fun animateStatus(text: String, colorHex: String) {
-        statusView.text = text
-        val from = (statusView.currentTextColor)
-        val to = Color.parseColor(colorHex)
-        colorAnimator?.cancel()
-        colorAnimator = ValueAnimator.ofObject(ArgbEvaluator(), from, to).apply {
-            duration = 800
-            interpolator = DecelerateInterpolator()
-            addUpdateListener { statusView.setTextColor(it.animatedValue as Int) }
-            start()
+            isTestRunning = false
+            btnPlayTest.isEnabled = true
+            btnStopTest.isEnabled = false
         }
+
+        Timber.e("❌ Error: ${error.code} - ${error.message}")
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (::engine.isInitialized) engine.release()
-        tts.stop()
-        tts.shutdown()
+
+        Timber.i("🔧 Destroying TestActivity...")
+
+        handler.removeCallbacksAndMessages(null)
+
+        try {
+            if (::engine.isInitialized) {
+                engine.release()
+                Timber.d("✅ Engine released")
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Error releasing engine")
+        }
+
+        Timber.i("✅ TestActivity destroyed")
     }
 }

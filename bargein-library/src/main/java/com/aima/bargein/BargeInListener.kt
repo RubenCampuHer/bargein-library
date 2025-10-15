@@ -33,6 +33,7 @@ data class BargeInError(
 
 enum class ErrorCode {
     PERMISSION_DENIED,
+    INITIALIZATION_FAILED,
     AUDIO_FOCUS_FAILED,
     AEC_INIT_FAILED,
     VAD_INIT_FAILED,

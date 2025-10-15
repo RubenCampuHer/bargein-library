@@ -5,15 +5,22 @@ import android.content.Context
 import androidx.annotation.RequiresPermission
 import com.aima.bargein.aec.AcousticEchoCancelerFactory
 import com.aima.bargein.aec.IAcousticEchoCanceler
-import com.aima.bargein.audio.*
+import com.aima.bargein.audio.AudioCapture
+import com.aima.bargein.audio.AudioFocusManager
+import com.aima.bargein.audio.AudioPlayback
+import com.aima.bargein.audio.AudioThreadConfig
 import com.aima.bargein.permissions.PermissionHelper
-import com.aima.bargein.vad.*
-import kotlinx.coroutines.*
+import com.aima.bargein.vad.EnergyVoiceActivityDetector
+import com.aima.bargein.vad.IVoiceActivityDetector
+import com.aima.bargein.vad.VoiceActivityDetectorFactory
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.io.InputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.math.*
 
 class BargeInEngine(
     private val context: Context,
@@ -30,195 +37,244 @@ class BargeInEngine(
     private val state = AtomicReference(BargeInState.IDLE)
     private val isListening = AtomicBoolean(false)
     private val isPlaying = AtomicBoolean(false)
+    private val bargeInTriggered = AtomicBoolean(false)
 
     private var voiceDetectionStartTime = 0L
     private var consecutiveVoiceFrames = 0L
-    private val minVoiceFrames = config.minVoiceDurationMs / 10
+    private val minVoiceFrames = (config.minVoiceDurationMs / 10).coerceAtLeast(1)
 
     private val engineScope = CoroutineScope(AudioThreadConfig.audioDispatcher + SupervisorJob())
 
-    // 🔹 Valor público para UI (nivel de confianza actual)
-    @Volatile
-    var lastConfidence: Float = 0f
-        private set
-
     init {
-        Timber.i("BargeInEngine created with config: $config")
+        Timber.i("🚀 BargeInEngine created with config: $config")
+        Timber.i("📊 minVoiceFrames = $minVoiceFrames (${config.minVoiceDurationMs}ms)")
     }
 
     fun initialize() {
-        Timber.d("Initializing BargeInEngine...")
+        Timber.d("🔧 Initializing BargeInEngine...")
 
         if (!PermissionHelper.hasRequiredPermissions(context)) {
-            val error = BargeInError(ErrorCode.PERMISSION_DENIED, "Missing RECORD_AUDIO permission")
+            val error = BargeInError(
+                ErrorCode.PERMISSION_DENIED,
+                "Missing RECORD_AUDIO permission"
+            )
             notifyError(error)
             throw SecurityException(error.message)
         }
 
         try {
-            aec = AcousticEchoCancelerFactory.create(
-                audioSessionId = 0,
+            // 1. Inicializar componentes de audio PRIMERO
+            initializeAudioComponents()
+            Timber.d("✅ Audio components initialized")
+
+            // 2. Inicializar AEC (NO CRÍTICO - puede fallar)
+            try {
+                aec = AcousticEchoCancelerFactory.create(
+                    audioSessionId = 0,
+                    sampleRate = config.sampleRate,
+                    preference = config.aecPreference
+                )
+
+                if (aec != null && aec!!.initialize()) {
+                    Timber.i("✅ AEC initialized: type=${aec?.getType()}")
+                } else {
+                    Timber.w("⚠️ AEC not available, using NoOp AEC")
+                    aec = AcousticEchoCancelerFactory.create(
+                        audioSessionId = 0,
+                        sampleRate = config.sampleRate,
+                        preference = IAcousticEchoCanceler.Type.NONE
+                    )
+                    aec?.initialize()
+                }
+            } catch (e: Exception) {
+                Timber.w(e, "⚠️ AEC initialization failed, using NoOp AEC")
+                aec = AcousticEchoCancelerFactory.create(
+                    audioSessionId = 0,
+                    sampleRate = config.sampleRate,
+                    preference = IAcousticEchoCanceler.Type.NONE
+                )
+                aec?.initialize()
+            }
+
+            // 3. Inicializar VAD (CRÍTICO)
+            vad = VoiceActivityDetectorFactory.create(
                 sampleRate = config.sampleRate,
-                preference = config.aecPreference
+                mode = config.vadMode,
+                preference = config.vadPreference
             )
 
-            if (aec == null || !aec!!.initialize()) {
-                val error = BargeInError(ErrorCode.AEC_INIT_FAILED, "Failed to initialize AEC")
-                notifyError(error)
-                throw IllegalStateException(error.message)
-            }
-
-            Timber.i("AEC initialized: type=${aec?.getType()}")
-
-            vad = SpectralVoiceActivityDetector(config)
             if (!vad!!.initialize(config.sampleRate, config.vadMode)) {
-                val error = BargeInError(ErrorCode.VAD_INIT_FAILED, "Failed to initialize VAD")
+                val error = BargeInError(
+                    ErrorCode.INITIALIZATION_FAILED,
+                    "Failed to initialize VAD - this is critical"
+                )
                 notifyError(error)
                 throw IllegalStateException(error.message)
             }
 
-            Timber.i("VAD initialized: type=${vad?.getType()}")
+            Timber.i("✅ VAD initialized: type=${vad?.getType()}")
 
-            initializeAudioComponents()
             updateState(BargeInState.IDLE)
             Timber.i("✅ BargeInEngine initialized successfully")
 
         } catch (e: Exception) {
-            Timber.e(e, "Error initializing BargeInEngine")
+            Timber.e(e, "❌ Error initializing BargeInEngine")
             cleanup()
             throw e
         }
     }
 
-    // ---------------------------
-    // AUDIO CONTROL
-    // ---------------------------
-
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun startListening() {
         if (state.get() == BargeInState.LISTENING) {
-            Timber.w("Already listening")
+            Timber.w("⚠️ Already listening")
             return
         }
 
         try {
             if (!audioFocusManager.requestAudioFocus()) {
-                val error = BargeInError(ErrorCode.AUDIO_FOCUS_FAILED, "Failed to obtain audio focus")
+                val error = BargeInError(
+                    ErrorCode.AUDIO_FOCUS_FAILED,
+                    "Failed to obtain audio focus"
+                )
                 notifyError(error)
                 throw IllegalStateException(error.message)
             }
 
             audioCapture.startCapture()
             isListening.set(true)
+
             consecutiveVoiceFrames = 0
             voiceDetectionStartTime = 0
+            bargeInTriggered.set(false)
 
             updateState(BargeInState.LISTENING)
             Timber.i("🎤 Listening started")
 
         } catch (e: Exception) {
-            Timber.e(e, "Error starting listening")
-            val error = BargeInError(ErrorCode.AUDIO_CAPTURE_FAILED, "Failed to start audio capture: ${e.message}", e)
+            Timber.e(e, "❌ Error starting listening")
+            val error = BargeInError(
+                ErrorCode.AUDIO_CAPTURE_FAILED,
+                "Failed to start audio capture: ${e.message}",
+                e
+            )
             notifyError(error)
             throw e
         }
     }
 
     fun stopListening() {
-        if (!isListening.get()) return
-        try {
-            audioCapture.stopCapture()
-        } catch (e: Exception) {
-            Timber.w(e, "Error stopping capture")
+        if (!isListening.get()) {
+            Timber.d("ℹ️ Not listening, nothing to stop")
+            return
         }
+
+        Timber.i("🛑 Stopping listening...")
+
+        audioCapture.stopCapture()
         audioFocusManager.abandonAudioFocus()
         isListening.set(false)
+
+        // Notificar al VAD que NO hay reproducción
+        (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
+
         updateState(BargeInState.STOPPED)
-        Timber.i("🎧 Listening stopped")
+        Timber.i("✅ Listening stopped")
     }
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun playAudio(audioStream: InputStream) {
         if (isPlaying.get()) {
-            Timber.w("Already playing audio")
-            return
+            Timber.w("⚠️ Already playing audio, stopping previous")
+            stopPlayback()
         }
 
         try {
-            if (!isListening.get()) startListening()
+            // Asegurar que está escuchando
+            if (!isListening.get()) {
+                Timber.i("🎤 Starting listening before playback")
+                startListening()
+            }
+
+            // Reset estado
+            bargeInTriggered.set(false)
+            consecutiveVoiceFrames = 0
+            voiceDetectionStartTime = 0
+
             isPlaying.set(true)
+
+            // Notificar al VAD que HAY reproducción
+            (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(true)
+            Timber.i("🔊 VAD notified: playback ACTIVE")
+
+            // Iniciar reproducción
             audioPlayback.playWav(audioStream)
-            Timber.i("▶️ Audio playback started")
+
+            Timber.i("🎵 Audio playback started")
+
         } catch (e: Exception) {
-            Timber.e(e, "Error playing audio")
+            Timber.e(e, "❌ Error playing audio")
             isPlaying.set(false)
-            val error = BargeInError(ErrorCode.AUDIO_PLAYBACK_FAILED, "Failed to play audio: ${e.message}", e)
+
+            // Revertir estado del VAD
+            (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
+
+            val error = BargeInError(
+                ErrorCode.AUDIO_PLAYBACK_FAILED,
+                "Failed to play audio: ${e.message}",
+                e
+            )
             notifyError(error)
         }
     }
 
     private fun stopPlayback(): Long {
-        if (!isPlaying.get()) return 0
-        Timber.i("🛑 Stopping playback ONLY (mic stays active)")
-        val stopTimestamp = System.nanoTime()
-        try {
-            audioPlayback.stopImmediately()
-        } catch (e: Exception) {
-            Timber.e(e, "Error stopping AudioPlayback")
+        if (!isPlaying.get()) {
+            Timber.d("ℹ️ No active playback to stop")
+            return 0
         }
+
+        Timber.i("⏸️ Stopping playback...")
+
+        val stopTimestamp = System.nanoTime()
+        audioPlayback.stopImmediately()
         isPlaying.set(false)
-        Timber.i("✅ Playback stopped, mic continues listening")
+
+        // Notificar al VAD que NO hay reproducción
+        (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
+        Timber.i("🔕 VAD notified: playback INACTIVE")
+
+        Timber.i("✅ Playback stopped")
         return stopTimestamp
     }
 
-    private fun triggerBargeIn(vadResult: IVoiceActivityDetector.VadResult, detectionTimestamp: Long) {
-        if (!isPlaying.get()) return
-        Timber.i("🚨 BARGE-IN TRIGGERED! Stopping playback, keeping mic active...")
-        updateState(BargeInState.INTERRUPTED)
-        val stopTimestamp = stopPlayback()
-        val latencyNs = stopTimestamp - voiceDetectionStartTime
-        val latencyMs = latencyNs / 1_000_000f
-        listener.onUserInterruption(
-            BargeInEvent(
-                detectionTimestamp = voiceDetectionStartTime,
-                stopTimestamp = stopTimestamp,
-                latencyMs = latencyMs,
-                confidence = vadResult.confidence,
-                energyDb = vadResult.energyDb
-            )
-        )
-        consecutiveVoiceFrames = 0
-        voiceDetectionStartTime = 0
-    }
-
-    fun forceStopPlayback(): Boolean {
-        return try {
-            if (isPlaying.get()) {
-                stopPlayback()
-                true
-            } else {
-                Timber.w("⚠️ No active playback to stop")
-                false
-            }
-        } catch (e: Exception) {
-            Timber.e(e, "❌ Error in forceStopPlayback")
-            false
-        }
+    /**
+     * Detiene solo la reproducción de audio, mantiene el micrófono activo.
+     */
+    fun stopAudioPlayback() {
+        stopPlayback()
     }
 
     fun release() {
-        Timber.d("Releasing BargeInEngine...")
-        forceStopPlayback()
+        Timber.d("🔧 Releasing BargeInEngine...")
+
         stopListening()
         cleanup()
         engineScope.cancel()
+
         updateState(BargeInState.IDLE)
-        Timber.i("BargeInEngine released")
+        Timber.i("✅ BargeInEngine released")
     }
 
-    // ---------------------------
-    // AUDIO PIPELINE
-    // ---------------------------
+    fun getMetrics(): BargeInMetrics {
+        return BargeInMetrics(
+            aecMetrics = aec?.getMetrics(),
+            vadMetrics = vad?.getMetrics(),
+            state = state.get(),
+            isListening = isListening.get(),
+            isPlaying = isPlaying.get()
+        )
+    }
 
     private fun initializeAudioComponents() {
         audioCapture = AudioCapture(
@@ -231,14 +287,13 @@ class BargeInEngine(
         audioPlayback = AudioPlayback(
             onPlaybackComplete = {
                 isPlaying.set(false)
-                Timber.d("Playback completed normally")
+                (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
+                Timber.d("✅ Playback completed normally")
             },
             onPlaybackStopped = {
                 isPlaying.set(false)
-                Timber.d("Playback stopped early (barge-in or manual)")
-            },
-            onPlaybackBuffer = { buffer ->
-                (vad as? SpectralVoiceActivityDetector)?.onFarEndPcm(buffer)
+                (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
+                Timber.d("🛑 Playback stopped by barge-in")
             }
         )
     }
@@ -248,48 +303,115 @@ class BargeInEngine(
 
         engineScope.launch {
             try {
+                // 1. Aplicar AEC
                 aec?.processFrame(audioData, audioData.size)
+
+                // 2. Aplicar VAD
                 val vadResult = vad?.processFrame(audioData, audioData.size) ?: return@launch
 
-                // 🔹 Guardar confianza para la progress bar
-                lastConfidence = vadResult.confidence
-
+                // 3. Verificar si hay voz con suficiente confianza
                 if (vadResult.hasVoice && vadResult.confidence >= config.voiceConfidenceThreshold) {
                     handleVoiceDetected(vadResult, timestamp)
                 } else {
+                    // Reset contador si no hay voz
                     consecutiveVoiceFrames = 0
                     voiceDetectionStartTime = 0
                 }
 
             } catch (e: Exception) {
-                Timber.e(e, "Error processing audio frame")
+                Timber.e(e, "❌ Error processing audio frame")
             }
         }
     }
 
-    private fun handleVoiceDetected(vadResult: IVoiceActivityDetector.VadResult, timestamp: Long) {
-        if (consecutiveVoiceFrames == 0L) voiceDetectionStartTime = timestamp
+    private fun handleVoiceDetected(
+        vadResult: IVoiceActivityDetector.VadResult,
+        timestamp: Long
+    ) {
+        // Registrar primer frame de voz
+        if (consecutiveVoiceFrames == 0L) {
+            voiceDetectionStartTime = timestamp
+            Timber.d("🗣️ First voice frame detected at ${timestamp}ns")
+        }
+
         consecutiveVoiceFrames++
-        if (consecutiveVoiceFrames >= minVoiceFrames) triggerBargeIn(vadResult, timestamp)
+
+        Timber.v("🔊 Voice frame #${consecutiveVoiceFrames} (need $minVoiceFrames), " +
+                "conf=${String.format("%.2f", vadResult.confidence)}, " +
+                "energy=${String.format("%.1f", vadResult.energyDb)}dB")
+
+        // Verificar si se alcanzó el mínimo de frames
+        if (consecutiveVoiceFrames >= minVoiceFrames) {
+            triggerBargeIn(vadResult, timestamp)
+        }
     }
 
-    // ---------------------------
-    // AUXILIARES
-    // ---------------------------
+    private fun triggerBargeIn(
+        vadResult: IVoiceActivityDetector.VadResult,
+        detectionTimestamp: Long
+    ) {
+        // Evitar múltiples triggers
+        if (bargeInTriggered.getAndSet(true)) {
+            Timber.v("⚠️ Barge-in already triggered, ignoring")
+            return
+        }
 
-    fun getMetrics(): BargeInMetrics {
-        return BargeInMetrics(
-            aecMetrics = aec?.getMetrics(),
-            vadMetrics = vad?.getMetrics(),
-            state = state.get(),
-            isListening = isListening.get(),
-            isPlaying = isPlaying.get()
+        // Solo si está reproduciendo
+        if (!isPlaying.get()) {
+            Timber.w("⚠️ Not playing, ignoring barge-in trigger")
+            bargeInTriggered.set(false)
+            return
+        }
+
+        Timber.i("🚨 BARGE-IN TRIGGERED! " +
+                "frames=$consecutiveVoiceFrames, " +
+                "conf=${String.format("%.2f", vadResult.confidence)}, " +
+                "energy=${String.format("%.1f", vadResult.energyDb)}dB")
+
+        // Cambiar estado
+        updateState(BargeInState.INTERRUPTED)
+
+        // Detener reproducción INMEDIATAMENTE
+        val stopTimestamp = stopPlayback()
+
+        // Calcular latencia
+        val latencyNs = stopTimestamp - voiceDetectionStartTime
+        val latencyMs = latencyNs / 1_000_000f
+
+        Timber.i("⏱️ Latency: ${String.format("%.1f", latencyMs)}ms " +
+                "(from first voice frame to stop)")
+
+        // Crear evento
+        val event = BargeInEvent(
+            detectionTimestamp = voiceDetectionStartTime,
+            stopTimestamp = stopTimestamp,
+            latencyMs = latencyMs,
+            confidence = vadResult.confidence,
+            energyDb = vadResult.energyDb
         )
+
+        // Notificar listener
+        try {
+            listener.onUserInterruption(event)
+            Timber.i("✅ Listener notified of barge-in")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error notifying listener")
+        }
+
+        Timber.i("🎉 Barge-in completed: latency=${String.format("%.1f", latencyMs)}ms, " +
+                "confidence=${String.format("%.0f", vadResult.confidence * 100)}%%")
+
+        // Reset contador
+        consecutiveVoiceFrames = 0
+        voiceDetectionStartTime = 0
     }
 
     private fun updateState(newState: BargeInState) {
         val oldState = state.getAndSet(newState)
-        if (oldState != newState) listener.onStateChanged(newState)
+        if (oldState != newState) {
+            Timber.d("📊 State: $oldState → $newState")
+            listener.onStateChanged(newState)
+        }
     }
 
     private fun notifyError(error: BargeInError) {
@@ -305,7 +427,7 @@ class BargeInEngine(
             vad?.release()
             audioFocusManager.abandonAudioFocus()
         } catch (e: Exception) {
-            Timber.e(e, "Error during cleanup")
+            Timber.e(e, "❌ Error during cleanup")
         }
     }
 }

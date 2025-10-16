@@ -1,23 +1,31 @@
 package com.aima.bargein.audio
 
-import android.Manifest
 import android.media.*
 import android.media.audiofx.AcousticEchoCanceler
-import android.media.audiofx.AutomaticGainControl
-import androidx.annotation.RequiresPermission
 import kotlinx.coroutines.*
 import timber.log.Timber
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.log10
+import kotlin.math.sqrt
 
+/**
+ * 🎙️ AudioCapture - Captura audio PCM16 a 44.1kHz con soporte para AEC ON/OFF
+ * ✅ Permite conmutar dinámicamente entre:
+ *    - VOICE_COMMUNICATION (AEC activado)
+ *    - MIC (AEC desactivado)
+ */
 class AudioCapture(
-    private val sampleRate: Int = 16000, // ✅ CORREGIDO: 16kHz consistente
-    private val onAudioData: (ShortArray, Long) -> Unit
+    private val sampleRate: Int = 44100,
+    private val frameSize: Int = 512,
+    private val onAudioData: (samples: ShortArray, length: Int) -> Unit
 ) {
     private var audioRecord: AudioRecord? = null
     private var captureJob: Job? = null
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // Frame de 10ms a 16kHz = 160 samples
-    private val frameSize = (sampleRate * 10) / 1000
+    @Volatile private var isCapturing = false
+    @Volatile var aecEnabled = true
 
     private val bufferSize = AudioRecord.getMinBufferSize(
         sampleRate,
@@ -25,147 +33,97 @@ class AudioCapture(
         AudioFormat.ENCODING_PCM_16BIT
     ).coerceAtLeast(frameSize * 4)
 
-    // ✅ NUEVO: AEC y AGC incorporados
-    private var acousticEchoCanceler: AcousticEchoCanceler? = null
-    private var automaticGainControl: AutomaticGainControl? = null
-
-    @Volatile private var isCapturing = false
-
-    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun startCapture() {
-        if (isCapturing) {
-            Timber.w("⚠️ Already capturing")
-            return
-        }
+        stopCapture() // reinicia si ya estaba activa
+
+        val source = if (aecEnabled)
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION
+        else
+            MediaRecorder.AudioSource.MIC
+
+        Timber.i("🎤 Audio capture initializing (${if (aecEnabled) "AEC ON" else "AEC OFF"})")
+        Timber.i("   Sample rate: ${sampleRate}Hz")
+        Timber.i("   Frame size: $frameSize samples (~${frameSize / sampleRate.toFloat() * 1000}ms)")
+        Timber.i("   Buffer size: $bufferSize bytes")
 
         try {
-            // ✅ CRÍTICO: Usar VOICE_COMMUNICATION para mejor AEC
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION, // ✅ Mejor AEC
+                source,
                 sampleRate,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
                 bufferSize
             )
 
-            check(audioRecord?.state == AudioRecord.STATE_INITIALIZED) {
-                "AudioRecord initialization failed"
-            }
-
-            val audioSessionId = audioRecord!!.audioSessionId
-
-            // ✅ Habilitar AEC nativo si está disponible
-            if (AcousticEchoCanceler.isAvailable()) {
-                try {
-                    acousticEchoCanceler = AcousticEchoCanceler.create(audioSessionId)
-                    acousticEchoCanceler?.enabled = true
-                    Timber.i("✅ AcousticEchoCanceler enabled (session=$audioSessionId)")
-                } catch (e: Exception) {
-                    Timber.w(e, "⚠️ Failed to enable AEC")
-                }
-            } else {
-                Timber.w("⚠️ AEC not available on this device")
-            }
-
-            // ✅ Habilitar AGC para normalizar volumen
-            if (AutomaticGainControl.isAvailable()) {
-                try {
-                    automaticGainControl = AutomaticGainControl.create(audioSessionId)
-                    automaticGainControl?.enabled = true
-                    Timber.i("✅ AutomaticGainControl enabled")
-                } catch (e: Exception) {
-                    Timber.w(e, "⚠️ Failed to enable AGC")
+            if (aecEnabled) {
+                val sessionId = audioRecord?.audioSessionId ?: 0
+                Timber.i("   Audio session: $sessionId")
+                if (AcousticEchoCanceler.isAvailable()) {
+                    val aec = AcousticEchoCanceler.create(sessionId)
+                    aec?.enabled = true
+                    Timber.i("   ✅ AcousticEchoCanceler enabled")
+                } else {
+                    Timber.w("   ⚠️ AEC not available on this device")
                 }
             }
 
             audioRecord?.startRecording()
             isCapturing = true
+            Timber.i("✅ Audio capture started successfully")
 
-            Timber.i("🎤 Audio capture started")
-            Timber.i("   Sample rate: ${sampleRate}Hz")
-            Timber.i("   Frame size: $frameSize samples (10ms)")
-            Timber.i("   Buffer size: $bufferSize bytes")
-            Timber.i("   Audio session: $audioSessionId")
-
-            captureJob = scope.launch { captureLoop() }
-
-        } catch (e: Exception) {
-            Timber.e(e, "❌ Failed to start audio capture")
-            cleanup()
-            throw e
-        }
-    }
-
-    private fun captureLoop() {
-        val buffer = ShortArray(frameSize)
-        var frameCount = 0
-
-        while (isCapturing && scope.isActive) {
-            try {
-                val timestamp = System.nanoTime()
-                val read = audioRecord?.read(buffer, 0, frameSize, AudioRecord.READ_BLOCKING) ?: 0
-
-                if (read > 0) {
-                    frameCount++
-                    onAudioData(buffer.copyOf(read), timestamp)
-
-                    // Log cada 500 frames (5 segundos a 10ms/frame)
-                    if (frameCount % 500 == 0) {
-                        Timber.v("📊 Captured $frameCount frames")
+            captureJob = scope.launch {
+                val buffer = ShortArray(frameSize)
+                var totalFrames = 0
+                while (isCapturing && isActive) {
+                    val read = audioRecord?.read(buffer, 0, frameSize) ?: 0
+                    if (read > 0) {
+                        totalFrames++
+                        onAudioData(buffer.copyOf(read), read)
+                        if (totalFrames % 172 == 0) {
+                            Timber.v("📊 Captured $totalFrames frames (${totalFrames * frameSize} samples)")
+                        }
                     }
-                } else if (read < 0) {
-                    Timber.w("⚠️ AudioRecord read error: $read")
                 }
-
-            } catch (e: Exception) {
-                if (isCapturing) {
-                    Timber.e(e, "❌ Error in capture loop")
-                }
+                Timber.d("🛑 Capture loop ended (total frames=$totalFrames)")
             }
+        } catch (e: SecurityException) {
+            Timber.e(e, "❌ Permission denied for microphone")
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error initializing AudioRecord")
+            stopCapture()
         }
-
-        Timber.d("🛑 Capture loop ended (frames=$frameCount)")
     }
 
     fun stopCapture() {
-        if (!isCapturing) {
-            Timber.d("ℹ️ Not capturing, nothing to stop")
-            return
-        }
-
         Timber.i("🛑 Stopping audio capture...")
         isCapturing = false
         captureJob?.cancel()
-        cleanup()
-        Timber.i("✅ Audio capture stopped")
-    }
+        captureJob = null
 
-    private fun cleanup() {
         try {
-            // Liberar AEC y AGC
-            acousticEchoCanceler?.release()
-            acousticEchoCanceler = null
-
-            automaticGainControl?.release()
-            automaticGainControl = null
-
-            // Liberar AudioRecord
             audioRecord?.apply {
-                if (state == AudioRecord.STATE_INITIALIZED) {
-                    stop()
-                }
+                stop()
                 release()
             }
-        } catch (e: Exception) {
-            Timber.e(e, "❌ Cleanup error")
-        } finally {
             audioRecord = null
+            Timber.i("✅ Audio capture stopped")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error stopping AudioRecord")
+        }
+    }
+
+    fun toggleAEC() {
+        aecEnabled = !aecEnabled
+        Timber.i("🔁 AEC toggled: ${if (aecEnabled) "ON (VOICE_COMMUNICATION)" else "OFF (MIC)"}")
+        if (isCapturing) {
+            stopCapture()
+            startCapture()
         }
     }
 
     fun release() {
         stopCapture()
         scope.cancel()
-        Timber.d("🔧 AudioCapture released")
     }
 }

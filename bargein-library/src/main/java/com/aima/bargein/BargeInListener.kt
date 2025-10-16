@@ -4,6 +4,8 @@ interface BargeInListener {
 
     fun onUserInterruption(event: BargeInEvent)
 
+    fun onPlaybackEnded() {}   // ✅ Añadido para compatibilidad con engine
+
     fun onStateChanged(state: BargeInState) {}
 
     fun onError(error: BargeInError) {}

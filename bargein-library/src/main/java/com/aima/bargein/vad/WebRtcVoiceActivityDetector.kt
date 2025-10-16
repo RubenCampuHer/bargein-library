@@ -5,6 +5,10 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.log10
 import kotlin.math.sqrt
 
+/**
+ * WebRTC VAD - Implementación usando librería nativa de Google
+ * NOTA: Actualmente sin compilar, retorna false en initialize()
+ */
 class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
 
     private var nativeHandle: Long = 0
@@ -16,6 +20,10 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
     @Volatile
     private var isActive = false
 
+    // ✅ NUEVO: Para compatibilidad con nueva interfaz
+    @Volatile
+    private var isPlaybackActive = false
+
     private var currentSampleRate = 0
     private var currentMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE
 
@@ -23,9 +31,9 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
         init {
             try {
                 System.loadLibrary("webrtc_vad")
-                Timber.d("WebRTC VAD native library loaded")
+                Timber.d("✅ WebRTC VAD native library loaded")
             } catch (e: UnsatisfiedLinkError) {
-                Timber.e(e, "Failed to load WebRTC VAD native library")
+                Timber.w("⚠️ WebRTC VAD native library not available")
             }
         }
 
@@ -48,38 +56,48 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
     ): Boolean {
         try {
             if (sampleRate !in listOf(8000, 16000, 32000, 48000)) {
-                Timber.e("Invalid sample rate for WebRTC VAD: $sampleRate")
+                Timber.e("❌ Invalid sample rate for WebRTC VAD: $sampleRate")
+                Timber.i("ℹ️ WebRTC VAD only supports: 8000, 16000, 32000, 48000 Hz")
                 return false
             }
 
             // Por ahora, simulamos que no está disponible
-            Timber.w("WebRTC VAD native library not available (not compiled yet)")
+            Timber.w("⚠️ WebRTC VAD native library not compiled yet")
+            Timber.i("ℹ️ Falling back to AdaptiveEnergyVAD")
             return false
 
-            // Este código se activará cuando compilemos WebRTC:
-            // nativeHandle = nativeCreate()
-            // if (nativeHandle == 0L) {
-            //     Timber.e("Failed to create WebRTC VAD instance")
-            //     return false
-            // }
-            //
-            // val success = nativeInit(nativeHandle, sampleRate, mode.value)
-            // if (!success) {
-            //     Timber.e("Failed to initialize WebRTC VAD")
-            //     nativeDestroy(nativeHandle)
-            //     nativeHandle = 0
-            //     return false
-            // }
-            //
-            // currentSampleRate = sampleRate
-            // currentMode = mode
-            // isActive = true
-            //
-            // Timber.i("WebRTC VAD initialized: sampleRate=$sampleRate, mode=$mode")
-            // return true
+            // ✅ Este código se activará cuando compilemos WebRTC:
+            /*
+            nativeHandle = nativeCreate()
+            if (nativeHandle == 0L) {
+                Timber.e("❌ Failed to create WebRTC VAD instance")
+                return false
+            }
+
+            val modeValue = when (mode) {
+                IVoiceActivityDetector.AggressivenessMode.QUALITY -> 0
+                IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE -> 2
+                IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE -> 3
+            }
+
+            val success = nativeInit(nativeHandle, sampleRate, modeValue)
+            if (!success) {
+                Timber.e("❌ Failed to initialize WebRTC VAD")
+                nativeDestroy(nativeHandle)
+                nativeHandle = 0
+                return false
+            }
+
+            currentSampleRate = sampleRate
+            currentMode = mode
+            isActive = true
+
+            Timber.i("✅ WebRTC VAD initialized: sampleRate=$sampleRate, mode=$mode")
+            return true
+            */
 
         } catch (e: Exception) {
-            Timber.e(e, "Error initializing WebRTC VAD")
+            Timber.e(e, "❌ Error initializing WebRTC VAD")
             return false
         }
     }
@@ -92,7 +110,8 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
                 hasVoice = false,
                 confidence = 0f,
                 energyDb = -100f,
-                timestamp = timestamp
+                timestamp = timestamp,
+                metadata = mapOf("error" to "not_initialized")
             )
         }
 
@@ -112,7 +131,7 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
 
             val energy = calculateEnergy(audioData, length)
             val energyDb = if (energy > 0) {
-                20 * log10(energy)
+                20 * log10(energy).toFloat()
             } else {
                 -100f
             }
@@ -135,18 +154,35 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
                 hasVoice = hasVoice,
                 confidence = confidence,
                 energyDb = energyDb,
-                timestamp = timestamp
+                timestamp = timestamp,
+                metadata = mapOf(
+                    "vadResult" to vadResult.toString(),
+                    "playbackActive" to isPlaybackActive.toString()
+                )
             )
 
         } catch (e: Exception) {
-            Timber.e(e, "Error processing frame with WebRTC VAD")
+            Timber.e(e, "❌ Error processing frame with WebRTC VAD")
             IVoiceActivityDetector.VadResult(
                 hasVoice = false,
                 confidence = 0f,
                 energyDb = -100f,
-                timestamp = timestamp
+                timestamp = timestamp,
+                metadata = mapOf("error" to e.message.orEmpty())
             )
         }
+    }
+
+    // ✅ IMPLEMENTADO: Método requerido por la nueva interfaz
+    override fun setPlaybackActive(active: Boolean) {
+        isPlaybackActive = active
+        if (active) {
+            Timber.d("🔊 WebRTC VAD: Playback active")
+        } else {
+            Timber.d("🔕 WebRTC VAD: Playback inactive")
+        }
+        // WebRTC VAD no adapta su comportamiento según playback
+        // (a diferencia de AdaptiveEnergyVAD que sí lo hace)
     }
 
     override fun release() {
@@ -155,9 +191,9 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
                 nativeDestroy(nativeHandle)
                 nativeHandle = 0
                 isActive = false
-                Timber.d("WebRTC VAD released")
+                Timber.d("✅ WebRTC VAD released")
             } catch (e: Exception) {
-                Timber.e(e, "Error releasing WebRTC VAD")
+                Timber.e(e, "❌ Error releasing WebRTC VAD")
             }
         }
     }
@@ -183,7 +219,13 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
             framesProcessed = frames,
             voiceFrames = voiceFrames.get(),
             averageProcessingTimeUs = avgTime,
-            averageConfidence = avgConfidence
+            averageConfidence = avgConfidence,
+            metadata = mapOf(
+                "isActive" to isActive,
+                "nativeHandle" to (nativeHandle != 0L),
+                "sampleRate" to currentSampleRate,
+                "mode" to currentMode.name
+            )
         )
     }
 

@@ -3,160 +3,173 @@ package com.aima.bargein.audio
 import android.media.*
 import kotlinx.coroutines.*
 import timber.log.Timber
-import java.io.InputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.PI
+import kotlin.math.sin
+import kotlin.math.pow
 
+/**
+ * AudioPlayback - reproducir audio PCM16 a 44.1 kHz (mono)
+ * Añade soporte para reproducir tonos sintéticos y sweep (20Hz–20kHz)
+ * ✅ Expone AudioSessionId para sincronización con AudioCapture
+ */
 class AudioPlayback(
-    private val onPlaybackComplete: (() -> Unit)? = null,
-    private val onPlaybackStopped: (() -> Unit)? = null,
-    private val onPlaybackBuffer: ((ShortArray) -> Unit)? = null
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO)
 ) {
-    @Volatile
     private var audioTrack: AudioTrack? = null
     private var playbackJob: Job? = null
-    private val stopRequested = AtomicBoolean(false)
 
-    private data class WavHeader(
-        val sampleRate: Int,
-        val channels: Int
-    )
+    private val sampleRate = 44100
+    private val channelConfig = AudioFormat.CHANNEL_OUT_MONO
+    private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
 
-    private fun parseHeader(input: InputStream): WavHeader {
-        val header = ByteArray(44)
-        val read = input.read(header)
-        if (read < 44) throw IllegalArgumentException("Invalid WAV header")
+    private val minBufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+    private val bufferSize = (minBufferSize * 2).coerceAtLeast(sampleRate / 10)
 
-        val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
-        buffer.position(22)
-        val channels = buffer.short.toInt()
-        val sampleRate = buffer.int
-        return WavHeader(sampleRate, channels)
+    @Volatile
+    private var isPlaying = false
+
+    fun isPlaying(): Boolean = isPlaying
+
+    /**
+     * ✅ NUEVO: Exponer el AudioSessionId para sincronización con AudioCapture
+     */
+    fun getAudioSessionId(): Int = audioTrack?.audioSessionId ?: 0
+
+    fun stop() {
+        scope.launch {
+            stopPlayback()
+        }
     }
 
-    fun playWav(stream: InputStream) {
-        stopRequested.set(false)
+    private fun stopPlayback() {
+        try {
+            Timber.i("⏸️ Stopping playback...")
+            isPlaying = false
+            playbackJob?.cancel()
 
-        playbackJob = CoroutineScope(Dispatchers.IO).launch {
+            audioTrack?.apply {
+                flush()
+                stop()
+                release()
+            }
+            audioTrack = null
+            Timber.i("✅ Playback stopped")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error stopping playback")
+        }
+    }
+
+    // =====================================================
+    // ==  WAV / PCM playback (para WAVs existentes)
+    // =====================================================
+    fun playPcmData(pcmData: ShortArray) {
+        stopPlayback()
+        playbackJob = scope.launch {
             try {
-                val header = parseHeader(stream)
-                val bufferSize = AudioTrack.getMinBufferSize(
-                    header.sampleRate,
-                    if (header.channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO,
-                    AudioFormat.ENCODING_PCM_16BIT
-                ).coerceAtLeast(4096)
-
-                val track = AudioTrack(
+                Timber.i("▶️ Playback STARTED (PCM data, ${pcmData.size} samples)")
+                audioTrack = AudioTrack(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        // ⚙️ USAGE_VOICE_COMMUNICATION activa mejor AEC
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build(),
                     AudioFormat.Builder()
-                        .setSampleRate(header.sampleRate)
-                        .setChannelMask(
-                            if (header.channels == 1)
-                                AudioFormat.CHANNEL_OUT_MONO
-                            else
-                                AudioFormat.CHANNEL_OUT_STEREO
-                        )
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setEncoding(audioFormat)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(channelConfig)
                         .build(),
                     bufferSize,
                     AudioTrack.MODE_STREAM,
                     AudioManager.AUDIO_SESSION_ID_GENERATE
                 )
 
-                audioTrack = track
-                track.play()
-                Timber.i("▶️ Playback STARTED (rate=${header.sampleRate}, ch=${header.channels})")
+                // ✅ Guarda sessionId para el AEC
+                val sessionId = audioTrack?.audioSessionId ?: 0
+                Timber.i("🎛️ AudioTrack creado con sessionId=$sessionId")
 
-                val buffer = ByteArray(bufferSize)
-                var bytesRead = stream.read(buffer)
+                audioTrack?.play()
+                isPlaying = true
 
-                while (!stopRequested.get() && bytesRead > 0) {
-                    val shortBuffer = ShortArray(bytesRead / 2)
-                    ByteBuffer.wrap(buffer, 0, bytesRead)
-                        .order(ByteOrder.LITTLE_ENDIAN)
-                        .asShortBuffer()
-                        .get(shortBuffer)
-
-                    val written = track.write(shortBuffer, 0, shortBuffer.size)
-                    if (written <= 0 || stopRequested.get()) break
-
-                    onPlaybackBuffer?.invoke(shortBuffer)
-
-                    bytesRead = stream.read(buffer)
+                val buffer = ShortArray(bufferSize / 2)
+                var offset = 0
+                while (isPlaying && offset < pcmData.size) {
+                    val length = minOf(buffer.size, pcmData.size - offset)
+                    System.arraycopy(pcmData, offset, buffer, 0, length)
+                    audioTrack?.write(buffer, 0, length)
+                    offset += length
                 }
-
-                if (stopRequested.get()) {
-                    Timber.w("🛑 Playback interrupted")
-                    onPlaybackStopped?.invoke()
-                } else {
-                    Timber.i("✅ Playback COMPLETED normally")
-                    onPlaybackComplete?.invoke()
-                }
-
+                stopPlayback()
             } catch (e: Exception) {
-                Timber.e(e, "Playback error")
-            } finally {
-                cleanup()
+                Timber.e(e, "❌ Error playing PCM data")
+                stopPlayback()
             }
         }
     }
 
-    fun stopImmediately(): Long {
-        val timestamp = System.currentTimeMillis()
-        stopRequested.set(true)
-        Timber.i("🧨 Forcing AudioTrack stop...")
 
-        GlobalScope.launch(Dispatchers.Default) {
+    // =====================================================
+    // ==  Tone generator (single tone)
+    // =====================================================
+    fun playTone(frequencyHz: Float, durationMs: Int, amplitudeDb: Float = -20f) {
+        stopPlayback()
+        playbackJob = scope.launch {
             try {
-                audioTrack?.let { track ->
-                    try {
-                        if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                            track.pause()
-                            track.flush()
-                            track.stop()
-                        }
-                    } catch (e: Exception) {
-                        Timber.w(e, "AudioTrack stop exception")
-                    } finally {
-                        try {
-                            track.release()
-                            Timber.i("✅ AudioTrack released forcibly")
-                        } catch (e: Exception) {
-                            Timber.w(e, "release() failed")
-                        }
-                    }
+                Timber.i("🎵 Playing tone: ${frequencyHz}Hz, ${durationMs}ms, amp=${amplitudeDb}dB")
+                val samplesCount = (sampleRate * (durationMs / 1000.0)).toInt()
+                val amplitude = 10.0.pow(amplitudeDb / 20.0)
+                val pcm = ShortArray(samplesCount) { i ->
+                    (sin(2.0 * PI * frequencyHz * i / sampleRate) * amplitude * Short.MAX_VALUE).toInt().toShort()
                 }
+                playPcmData(pcm)
             } catch (e: Exception) {
-                Timber.e(e, "Error during forced stop")
+                Timber.e(e, "❌ Error generating tone")
             }
-        }
-
-        playbackJob?.cancel("forced stop")
-        playbackJob = null
-        audioTrack = null
-
-        Timber.i("✅ stopImmediately finished at ${timestamp}ms")
-        return timestamp
-    }
-
-    private fun cleanup() {
-        try {
-            audioTrack?.apply {
-                if (playState != AudioTrack.PLAYSTATE_STOPPED) stop()
-                release()
-            }
-        } catch (e: Exception) {
-            Timber.w(e, "cleanup() error")
-        } finally {
-            audioTrack = null
         }
     }
 
+    // =====================================================
+    // ==  Frequency sweep (20Hz–20kHz)
+    // =====================================================
+    fun playSweep(startHz: Float = 20f, endHz: Float = 20000f, durationMs: Int = 8000) {
+        stopPlayback()
+        playbackJob = scope.launch {
+            try {
+                Timber.i("🎧 Playing sweep: ${startHz}Hz → ${endHz}Hz, duration=${durationMs}ms")
+                val totalSamples = (sampleRate * (durationMs / 1000.0)).toInt()
+                val pcm = ShortArray(totalSamples)
+
+                // 🔧 Calcular sweep exponencial en Double
+                val start = startHz.toDouble()
+                val end = endHz.toDouble()
+                val k = (end / start).pow(1.0 / totalSamples)
+                var f = start
+
+                for (i in 0 until totalSamples) {
+                    val s = sin(2.0 * Math.PI * f * i / sampleRate)
+                    pcm[i] = (s * Short.MAX_VALUE).toInt().toShort()
+                    f *= k
+                }
+
+                playPcmData(pcm)
+            } catch (e: Exception) {
+                Timber.e(e, "❌ Error generating sweep")
+            }
+        }
+    }
+
+
+    // =====================================================
+    // ==  Quick test: 15kHz pilot tone
+    // =====================================================
+    fun playPilotTone() {
+        playTone(frequencyHz = 15000f, durationMs = 5000, amplitudeDb = -20f)
+    }
+
+    // =====================================================
+    // ==  Cleanup
+    // =====================================================
     fun release() {
-        stopImmediately()
+        stopPlayback()
+        scope.cancel()
     }
 }

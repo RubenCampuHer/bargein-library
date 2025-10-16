@@ -510,18 +510,18 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             engine.startListening()
 
             statusText.text = """
-                ✅ Sistema activo
+                ✅ Sistema listo
                 
-                🎤 Micrófono: ESCUCHANDO
-                📊 Analizando continuamente
+                🎤 Micrófono: Capturando
+                ⏸️ VAD: Pausado (ahorra CPU)
                 
-                Presiona "INICIAR TEST" para probar
+                Presiona "INICIAR TEST" para comenzar
             """.trimIndent()
 
             btnPlayTest.isEnabled = true
             startUIUpdates()
 
-            Timber.i("✅ Auto-monitoring started")
+            Timber.i("✅ Auto-monitoring started (VAD paused)")
 
         } catch (e: SecurityException) {
             statusText.text = "❌ Error de permisos:\n${e.message}"
@@ -631,12 +631,12 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             statusText.text = """
                 🎵 REPRODUCIENDO AUDIO
                 
-                ¡Interrumpe hablando FUERTE!
+                ¡Interrumpe hablando!
                 
                 Observa:
                 • Barra de nivel de audio
                 • Métricas en tiempo real
-                • Logs con ZCR y periodicidad
+                • Detección de voz activa
             """.trimIndent()
 
             btnPlayTest.isEnabled = false
@@ -676,10 +676,10 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             isTestRunning = false
 
             statusText.text = """
-                ⏸️ Audio detenido manualmente
+                ⏸️ Audio detenido
                 
-                🎤 Micrófono: Sigue activo
-                📊 Monitoreando continuamente
+                🎤 Micrófono: Capturando
+                ⏸️ VAD: Pausado
                 
                 Puedes iniciar otro test
             """.trimIndent()

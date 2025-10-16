@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AudioPlayback(
     private val onPlaybackComplete: (() -> Unit)? = null,
     private val onPlaybackStopped: (() -> Unit)? = null,
-    private val onPlaybackBuffer: ((ShortArray) -> Unit)? = null // 🧠 NUEVO: callback far-end
+    private val onPlaybackBuffer: ((ShortArray) -> Unit)? = null
 ) {
     @Volatile
     private var audioTrack: AudioTrack? = null
@@ -75,18 +75,15 @@ class AudioPlayback(
                 var bytesRead = stream.read(buffer)
 
                 while (!stopRequested.get() && bytesRead > 0) {
-                    // Convertir a ShortArray para callback VAD
                     val shortBuffer = ShortArray(bytesRead / 2)
                     ByteBuffer.wrap(buffer, 0, bytesRead)
                         .order(ByteOrder.LITTLE_ENDIAN)
                         .asShortBuffer()
                         .get(shortBuffer)
 
-                    // 🔊 Enviar al altavoz
                     val written = track.write(shortBuffer, 0, shortBuffer.size)
                     if (written <= 0 || stopRequested.get()) break
 
-                    // 🧠 Enviar al VAD la referencia far-end
                     onPlaybackBuffer?.invoke(shortBuffer)
 
                     bytesRead = stream.read(buffer)
@@ -108,9 +105,6 @@ class AudioPlayback(
         }
     }
 
-    /**
-     * Parada inmediata del audio.
-     */
     fun stopImmediately(): Long {
         val timestamp = System.currentTimeMillis()
         stopRequested.set(true)

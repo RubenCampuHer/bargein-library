@@ -2,6 +2,8 @@ package com.aima.bargein.audio
 
 import android.Manifest
 import android.media.*
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
 import androidx.annotation.RequiresPermission
 import kotlinx.coroutines.*
 import timber.log.Timber
@@ -23,6 +25,10 @@ class AudioCapture(
         AudioFormat.ENCODING_PCM_16BIT
     ).coerceAtLeast(frameSize * 4)
 
+    // ✅ NUEVO: AEC y AGC incorporados
+    private var acousticEchoCanceler: AcousticEchoCanceler? = null
+    private var automaticGainControl: AutomaticGainControl? = null
+
     @Volatile private var isCapturing = false
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
@@ -33,8 +39,9 @@ class AudioCapture(
         }
 
         try {
+            // ✅ CRÍTICO: Usar VOICE_COMMUNICATION para mejor AEC
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION, // ✅ Usa AEC hardware si disponible
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION, // ✅ Mejor AEC
                 sampleRate,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
@@ -45,6 +52,32 @@ class AudioCapture(
                 "AudioRecord initialization failed"
             }
 
+            val audioSessionId = audioRecord!!.audioSessionId
+
+            // ✅ Habilitar AEC nativo si está disponible
+            if (AcousticEchoCanceler.isAvailable()) {
+                try {
+                    acousticEchoCanceler = AcousticEchoCanceler.create(audioSessionId)
+                    acousticEchoCanceler?.enabled = true
+                    Timber.i("✅ AcousticEchoCanceler enabled (session=$audioSessionId)")
+                } catch (e: Exception) {
+                    Timber.w(e, "⚠️ Failed to enable AEC")
+                }
+            } else {
+                Timber.w("⚠️ AEC not available on this device")
+            }
+
+            // ✅ Habilitar AGC para normalizar volumen
+            if (AutomaticGainControl.isAvailable()) {
+                try {
+                    automaticGainControl = AutomaticGainControl.create(audioSessionId)
+                    automaticGainControl?.enabled = true
+                    Timber.i("✅ AutomaticGainControl enabled")
+                } catch (e: Exception) {
+                    Timber.w(e, "⚠️ Failed to enable AGC")
+                }
+            }
+
             audioRecord?.startRecording()
             isCapturing = true
 
@@ -52,6 +85,7 @@ class AudioCapture(
             Timber.i("   Sample rate: ${sampleRate}Hz")
             Timber.i("   Frame size: $frameSize samples (10ms)")
             Timber.i("   Buffer size: $bufferSize bytes")
+            Timber.i("   Audio session: $audioSessionId")
 
             captureJob = scope.launch { captureLoop() }
 
@@ -108,6 +142,14 @@ class AudioCapture(
 
     private fun cleanup() {
         try {
+            // Liberar AEC y AGC
+            acousticEchoCanceler?.release()
+            acousticEchoCanceler = null
+
+            automaticGainControl?.release()
+            automaticGainControl = null
+
+            // Liberar AudioRecord
             audioRecord?.apply {
                 if (state == AudioRecord.STATE_INITIALIZED) {
                     stop()

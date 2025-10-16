@@ -320,36 +320,62 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         try {
             wavFile = File(cacheDir, "test_audio.wav")
 
+            // 🗑️ TEMPORAL: Forzar re-copia desde assets
             if (wavFile!!.exists()) {
-                Timber.i("✅ WAV file already exists: ${wavFile!!.absolutePath}")
-                return
+                Timber.w("🗑️ Deleting existing cached WAV to force re-copy from assets...")
+                wavFile!!.delete()
             }
 
+            // Intentar copiar desde assets
+            var copiedFromAssets = false
             try {
+                Timber.i("📂 Attempting to copy test_audio.wav from assets...")
+
                 val assetManager = assets
                 val inputStream = assetManager.open("test_audio.wav")
                 val outputStream = FileOutputStream(wavFile)
 
-                val buffer = ByteArray(1024)
-                var read: Int
-                while (inputStream.read(buffer).also { read = it } != -1) {
-                    outputStream.write(buffer, 0, read)
+                val buffer = ByteArray(8192)
+                var bytesRead: Int
+                var totalBytes = 0L
+
+                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    outputStream.write(buffer, 0, bytesRead)
+                    totalBytes += bytesRead
                 }
 
                 inputStream.close()
                 outputStream.flush()
                 outputStream.close()
 
-                Timber.i("✅ WAV file copied from assets: ${wavFile!!.absolutePath}")
+                copiedFromAssets = true
+                Timber.i("✅ WAV file copied successfully from assets!")
+                Timber.i("   Source: app/src/main/assets/test_audio.wav")
+                Timber.i("   Destination: ${wavFile!!.absolutePath}")
+                Timber.i("   Size: ${totalBytes / 1024}KB (${totalBytes} bytes)")
 
+            } catch (e: java.io.FileNotFoundException) {
+                Timber.w("⚠️ test_audio.wav NOT FOUND in assets folder")
+                Timber.w("   Expected location: app/src/main/assets/test_audio.wav")
+                Timber.w("   Will generate synthetic audio instead")
             } catch (e: Exception) {
-                Timber.w("WAV not in assets, generating synthetic audio...")
+                Timber.e(e, "❌ Error reading WAV from assets")
+            }
+
+            // Si no se copió desde assets, generar sintético
+            if (!copiedFromAssets) {
+                Timber.i("🔧 Generating synthetic test audio...")
                 WavGenerator.generateTestWav(wavFile!!, durationSeconds = 15)
-                Timber.i("✅ WAV file generated: ${wavFile!!.absolutePath}")
+
+                val fileSize = wavFile!!.length()
+                Timber.i("✅ Synthetic WAV generated successfully")
+                Timber.i("   Location: ${wavFile!!.absolutePath}")
+                Timber.i("   Size: ${fileSize / 1024}KB (${fileSize} bytes)")
+                Timber.i("   Duration: 15 seconds")
             }
 
         } catch (e: Exception) {
-            Timber.e(e, "Error preparing WAV file")
+            Timber.e(e, "❌ CRITICAL ERROR preparing WAV file")
             wavFile = null
         }
     }
@@ -439,9 +465,9 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             }
 
             val modeText = when (newMode) {
-                SensitivityMode.SUPER_SENSITIVE -> "🔴 SUPER SENSIBLE\n10ms • Ultra sensible"
-                SensitivityMode.SENSITIVE -> "🟡 SENSIBLE\n20ms • Muy sensible"
-                SensitivityMode.NORMAL -> "🟢 NORMAL\n30ms • Moderado"
+                SensitivityMode.SUPER_SENSITIVE -> "🔴 SUPER SENSIBLE\n20ms • 2 frames"
+                SensitivityMode.SENSITIVE -> "🟡 SENSIBLE\n30ms • 3 frames"
+                SensitivityMode.NORMAL -> "🟢 NORMAL\n40ms • 4 frames"
             }
 
             statusText.text = """

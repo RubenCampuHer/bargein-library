@@ -43,11 +43,11 @@ class TestActivity : AppCompatActivity(), BargeInListener {
     private var wavFile: File? = null
     private var isTestRunning = false
 
-    // ✅ Modos de sensibilidad CALIBRADOS
+    // ✅ Modos calibrados para 44.1kHz (512 samples/frame = ~11.6ms)
     private enum class SensitivityMode {
-        SUPER_SENSITIVE,  // Ultra rápido, acepta más fácil
-        SENSITIVE,        // Equilibrado
-        NORMAL            // Más conservador
+        SUPER_SENSITIVE,  // 2 frames (~25ms) - conf 0.40
+        SENSITIVE,        // 3 frames (~36ms) - conf 0.45
+        NORMAL            // 4 frames (~48ms) - conf 0.50
     }
 
     private var currentMode = SensitivityMode.SENSITIVE
@@ -62,7 +62,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         super.onCreate(savedInstanceState)
 
         Timber.plant(Timber.DebugTree())
-        Timber.i("🚀 TestActivity started - Auto-initialization mode")
+        Timber.i("🚀 TestActivity started @ 44.1kHz - Delta detection mode")
 
         setupUI()
         checkPermissions()
@@ -85,7 +85,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         })
 
         layout.addView(TextView(this).apply {
-            text = "Micrófono siempre activo • ZCR + Periodicity Method"
+            text = "@ 44.1kHz • Delta Detection • 350ms Pre-Cal"
             textSize = 14f
             setTextColor(Color.parseColor("#757575"))
             gravity = Gravity.CENTER
@@ -96,7 +96,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         val audioContainer = createCard()
 
         audioLevelText = TextView(this).apply {
-            text = "🔇 Inicializando..."
+            text = "🔇 Inicializando @ 44.1kHz..."
             textSize = 16f
             setTextColor(Color.parseColor("#212121"))
             setPadding(0, 0, 0, 12)
@@ -120,12 +120,13 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             setPadding(0, 0, 0, 8)
         }
 
-        val zcrInfoText = TextView(this).apply {
+        val infoText = TextView(this).apply {
             text = """
-                Análisis Multi-Criterio:
-                • ZCR (0.072-0.35) = Voz ✅
-                • Periodicity (>0.3) = Estructura de voz
-                • High Freq (>48%) = Contenido agudo
+                Análisis @ 44.1kHz:
+                • High-Pass: 600Hz (preserva voz)
+                • Detección por Delta: >12dB = voz
+                • Calibración: 200ms con audio real
+                • Pre-delay: 350ms antes de calibrar
             """.trimIndent()
             textSize = 12f
             setTextColor(Color.parseColor("#757575"))
@@ -136,7 +137,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         audioContainer.addView(audioLevelText)
         audioContainer.addView(audioLevelBar)
         audioContainer.addView(metricsText)
-        audioContainer.addView(zcrInfoText)
+        audioContainer.addView(infoText)
         layout.addView(audioContainer)
 
         // ===== STATUS =====
@@ -293,19 +294,33 @@ class TestActivity : AppCompatActivity(), BargeInListener {
     }
 
     private fun onPermissionsGranted() {
-        Timber.i("✅ Permissions granted - Starting auto-initialization")
+        Timber.i("✅ Permissions granted - Starting initialization @ 44.1kHz")
 
-        statusText.text = "⏳ Inicializando automáticamente..."
+        statusText.text = "⏳ Inicializando @ 44.1kHz..."
 
         try {
             copyWavFromAssets()
             currentMode = SensitivityMode.SENSITIVE
             updateModeButtons()
             initializeEngine()
-            startAutoMonitoring()
+
+            statusText.text = """
+                ✅ Sistema listo @ 44.1kHz
+                
+                🎤 Micrófono: LISTO (inactivo)
+                🎚️ High-pass: 600Hz
+                🎯 Delta detection: >12dB
+                ⏱️ Pre-calibración: 350ms
+                
+                Presiona "INICIAR TEST" para comenzar
+            """.trimIndent()
+
+            btnPlayTest.isEnabled = true
+
+            Timber.i("✅ System ready (idle mode)")
 
         } catch (e: Exception) {
-            Timber.e(e, "Error in auto-initialization")
+            Timber.e(e, "Error in initialization")
             statusText.text = """
                 ❌ Error al inicializar
                 
@@ -320,13 +335,11 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         try {
             wavFile = File(cacheDir, "test_audio.wav")
 
-            // 🗑️ TEMPORAL: Forzar re-copia desde assets
             if (wavFile!!.exists()) {
-                Timber.w("🗑️ Deleting existing cached WAV to force re-copy from assets...")
+                Timber.i("🗑️ Deleting existing WAV file...")
                 wavFile!!.delete()
             }
 
-            // Intentar copiar desde assets
             var copiedFromAssets = false
             try {
                 Timber.i("📂 Attempting to copy test_audio.wav from assets...")
@@ -350,28 +363,16 @@ class TestActivity : AppCompatActivity(), BargeInListener {
 
                 copiedFromAssets = true
                 Timber.i("✅ WAV file copied successfully from assets!")
-                Timber.i("   Source: app/src/main/assets/test_audio.wav")
-                Timber.i("   Destination: ${wavFile!!.absolutePath}")
-                Timber.i("   Size: ${totalBytes / 1024}KB (${totalBytes} bytes)")
+                Timber.i("   Size: ${totalBytes / 1024}KB")
 
             } catch (e: java.io.FileNotFoundException) {
-                Timber.w("⚠️ test_audio.wav NOT FOUND in assets folder")
-                Timber.w("   Expected location: app/src/main/assets/test_audio.wav")
-                Timber.w("   Will generate synthetic audio instead")
-            } catch (e: Exception) {
-                Timber.e(e, "❌ Error reading WAV from assets")
+                Timber.w("⚠️ test_audio.wav NOT FOUND in assets")
+                Timber.w("   Will generate synthetic audio at 44.1kHz")
             }
 
-            // Si no se copió desde assets, generar sintético
             if (!copiedFromAssets) {
-                Timber.i("🔧 Generating synthetic test audio...")
+                Timber.i("🔧 Generating synthetic WAV @ 44.1kHz...")
                 WavGenerator.generateTestWav(wavFile!!, durationSeconds = 15)
-
-                val fileSize = wavFile!!.length()
-                Timber.i("✅ Synthetic WAV generated successfully")
-                Timber.i("   Location: ${wavFile!!.absolutePath}")
-                Timber.i("   Size: ${fileSize / 1024}KB (${fileSize} bytes)")
-                Timber.i("   Duration: 15 seconds")
             }
 
         } catch (e: Exception) {
@@ -382,7 +383,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
 
     private fun initializeEngine() {
         try {
-            Timber.i("🔧 Initializing BargeInEngine with mode: $currentMode")
+            Timber.i("🔧 Initializing BargeInEngine @ 44.1kHz with mode: $currentMode")
 
             val config = getConfigForMode(currentMode)
 
@@ -394,17 +395,13 @@ class TestActivity : AppCompatActivity(), BargeInListener {
 
             engine.initialize()
 
-            Timber.i("✅ Engine initialized successfully with mode: $currentMode")
+            Timber.i("✅ Engine initialized successfully @ 44.1kHz with mode: $currentMode")
 
         } catch (e: Exception) {
             statusText.text = """
                 ❌ Error al inicializar motor
                 
                 ${e.message}
-                
-                ${if (e.message?.contains("AEC") == true)
-                "Nota: Algunos dispositivos no soportan AEC nativo"
-            else ""}
             """.trimIndent()
 
             Timber.e(e, "Engine initialization failed")
@@ -412,28 +409,27 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         }
     }
 
-    // ✅ CONFIGURACIONES OPTIMIZADAS - Balance detección/precisión
     private fun getConfigForMode(mode: SensitivityMode): BargeInConfig {
         return when (mode) {
             SensitivityMode.SUPER_SENSITIVE -> BargeInConfig(
-                sampleRate = 16000,
+                sampleRate = 44100,
                 vadMode = IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE,
-                minVoiceDurationMs = 20, // 2 frames = rápido pero seguro
-                voiceConfidenceThreshold = 0.45f
+                minVoiceDurationMs = 25,
+                voiceConfidenceThreshold = 0.40f
             )
 
             SensitivityMode.SENSITIVE -> BargeInConfig(
-                sampleRate = 16000,
+                sampleRate = 44100,
                 vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
-                minVoiceDurationMs = 30, // 3 frames
-                voiceConfidenceThreshold = 0.50f
+                minVoiceDurationMs = 36,
+                voiceConfidenceThreshold = 0.45f
             )
 
             SensitivityMode.NORMAL -> BargeInConfig(
-                sampleRate = 16000,
+                sampleRate = 44100,
                 vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
-                minVoiceDurationMs = 40, // 4 frames
-                voiceConfidenceThreshold = 0.55f
+                minVoiceDurationMs = 48,
+                voiceConfidenceThreshold = 0.50f
             )
         }
     }
@@ -453,29 +449,24 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         updateModeButtons()
 
         try {
-            Timber.i("🔄 Changing mode to: $newMode")
-
-            val wasListening = engine.getMetrics().isListening
+            Timber.i("🔄 Changing mode to: $newMode @ 44.1kHz")
 
             engine.release()
             initializeEngine()
 
-            if (wasListening) {
-                startAutoMonitoring()
-            }
-
             val modeText = when (newMode) {
-                SensitivityMode.SUPER_SENSITIVE -> "🔴 SUPER SENSIBLE\n20ms • 2 frames"
-                SensitivityMode.SENSITIVE -> "🟡 SENSIBLE\n30ms • 3 frames"
-                SensitivityMode.NORMAL -> "🟢 NORMAL\n40ms • 4 frames"
+                SensitivityMode.SUPER_SENSITIVE -> "🔴 SUPER SENSIBLE\n25ms • 2 frames • conf=0.40"
+                SensitivityMode.SENSITIVE -> "🟡 SENSIBLE\n36ms • 3 frames • conf=0.45"
+                SensitivityMode.NORMAL -> "🟢 NORMAL\n48ms • 4 frames • conf=0.50"
             }
 
             statusText.text = """
-                ✅ Modo cambiado
+                ✅ Modo cambiado @ 44.1kHz
                 
                 $modeText
                 
-                🎤 Micrófono activo
+                🎤 Sistema listo (inactivo)
+                Presiona "INICIAR TEST" para probar
             """.trimIndent()
 
             Timber.i("✅ Mode changed successfully to: $newMode")
@@ -498,45 +489,13 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         }
     }
 
-    @Suppress("MissingPermission")
-    private fun startAutoMonitoring() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED) {
-            statusText.text = "❌ No hay permiso de micrófono"
-            return
-        }
-
-        try {
-            engine.startListening()
-
-            statusText.text = """
-                ✅ Sistema activo
-                
-                🎤 Micrófono: ESCUCHANDO
-                📊 Analizando continuamente
-                
-                Presiona "INICIAR TEST" para probar
-            """.trimIndent()
-
-            btnPlayTest.isEnabled = true
-            startUIUpdates()
-
-            Timber.i("✅ Auto-monitoring started")
-
-        } catch (e: SecurityException) {
-            statusText.text = "❌ Error de permisos:\n${e.message}"
-            Timber.e(e, "Permission error")
-        } catch (e: Exception) {
-            statusText.text = "❌ Error iniciando monitoreo:\n${e.message}"
-            Timber.e(e, "Failed to start monitoring")
-        }
-    }
-
     private fun startUIUpdates() {
         val updateRunnable = object : Runnable {
             override fun run() {
-                updateAudioVisualizer()
-                handler.postDelayed(this, 50)
+                if (isTestRunning) {
+                    updateAudioVisualizer()
+                    handler.postDelayed(this, 50)
+                }
             }
         }
         handler.post(updateRunnable)
@@ -593,7 +552,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
 
             frequencyInfoText.text = """
                 📊 Frames: ${vadMetrics.framesProcessed} | Voz: ${vadMetrics.voiceFrames} (${String.format("%.1f", voiceRatio * 100)}%)
-                ⏱️ Proc: ${vadMetrics.averageProcessingTimeUs}µs/frame
+                ⏱️ Proc: ${vadMetrics.averageProcessingTimeUs}µs/frame (~11.6ms)
                 🎯 Estado: $stateEmoji ${metrics.state} | Mic: $listeningStatus | Audio: $playingStatus
             """.trimIndent()
 
@@ -628,24 +587,32 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         try {
             isTestRunning = true
 
+            // Iniciar captura primero
+            engine.startListening()
+
             statusText.text = """
-                🎵 REPRODUCIENDO AUDIO
+                🎵 REPRODUCIENDO AUDIO @ 44.1kHz
                 
                 ¡Interrumpe hablando FUERTE!
                 
-                Observa:
-                • Barra de nivel de audio
-                • Métricas en tiempo real
-                • Logs con ZCR y periodicidad
+                🎤 Micrófono: ACTIVO
+                ⏳ Pre-delay: 350ms (esperando AudioTrack)
+                🎯 Calibración: 200ms después del delay
+                📊 Detección: Delta >12dB
             """.trimIndent()
 
             btnPlayTest.isEnabled = false
             btnStopTest.isEnabled = true
 
-            val inputStream = wavFile!!.inputStream()
-            engine.playAudio(inputStream)
+            // Iniciar UI updates
+            startUIUpdates()
 
-            Timber.i("▶️ Barge-in test started")
+            // Iniciar reproducción (con delay interno de 350ms antes de calibrar)
+            handler.postDelayed({
+                val inputStream = wavFile!!.inputStream()
+                engine.playAudio(inputStream)
+                Timber.i("▶️ Barge-in test started @ 44.1kHz")
+            }, 100)
 
         } catch (e: SecurityException) {
             statusText.text = "❌ Error de permisos:\n${e.message}"
@@ -669,29 +636,36 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         }
 
         try {
-            Timber.i("🛑 User requested to stop audio...")
+            Timber.i("🛑 User requested to stop test...")
 
+            // Detener reproducción
             engine.stopAudioPlayback()
+
+            // Detener captura
+            engine.stopListening()
+
+            // Detener UI updates
+            handler.removeCallbacksAndMessages(null)
 
             isTestRunning = false
 
             statusText.text = """
-                ⏸️ Audio detenido manualmente
+                ⏸️ Test detenido
                 
-                🎤 Micrófono: Sigue activo
-                📊 Monitoreando continuamente
+                🎤 Micrófono: INACTIVO
+                📊 Sistema en reposo
                 
-                Puedes iniciar otro test
+                Presiona "INICIAR TEST" para otra prueba
             """.trimIndent()
 
             btnPlayTest.isEnabled = true
             btnStopTest.isEnabled = false
 
-            Timber.i("✅ Audio stopped, microphone remains active")
+            Timber.i("✅ Test stopped, system idle")
 
         } catch (e: Exception) {
             statusText.text = "❌ Error deteniendo:\n${e.message}"
-            Timber.e(e, "Error stopping audio")
+            Timber.e(e, "Error stopping test")
         }
     }
 
@@ -700,6 +674,11 @@ class TestActivity : AppCompatActivity(), BargeInListener {
     @Suppress("MissingPermission")
     override fun onUserInterruption(event: BargeInEvent) {
         runOnUiThread {
+            // Detener todo
+            engine.stopAudioPlayback()
+            engine.stopListening()
+            handler.removeCallbacksAndMessages(null)
+
             isTestRunning = false
 
             val latencyOk = event.latencyMs < 300
@@ -715,22 +694,12 @@ class TestActivity : AppCompatActivity(), BargeInListener {
                 
                 ${if (latencyOk) "¡Excelente respuesta! <300ms" else "Mejorable (>300ms)"}
                 
-                🎤 Micrófono sigue activo
+                🎤 Sistema en reposo
+                Presiona "INICIAR TEST" para otra prueba
             """.trimIndent()
 
             btnPlayTest.isEnabled = true
             btnStopTest.isEnabled = false
-
-            handler.postDelayed({
-                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                    == PackageManager.PERMISSION_GRANTED) {
-                    try {
-                        engine.startListening()
-                    } catch (e: Exception) {
-                        Timber.e(e, "Error resuming monitoring")
-                    }
-                }
-            }, 100)
         }
 
         Timber.i("🎉 BARGE-IN! latency=${String.format("%.1f", event.latencyMs)}ms, " +

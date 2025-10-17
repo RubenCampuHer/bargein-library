@@ -6,14 +6,14 @@ import kotlin.math.*
 object AudioFilter {
 
     /**
-     * Filtro paso-alto mejorado para eliminar graves del altavoz.
-     * Cutoff aumentado a 450Hz para ser más agresivo.
+     * Filtro paso-alto para eliminar graves del altavoz.
+     * ⚠️ Reducido a 600Hz para preservar más voz
      */
     fun applyHighPassFilter(
         samples: ShortArray,
         length: Int,
-        cutoffFreq: Float = 450f, // ✅ Más agresivo contra altavoz
-        sampleRate: Int = 16000
+        cutoffFreq: Float = 600f, // ⚠️ Reducido de 800Hz a 600Hz
+        sampleRate: Int = 44100
     ) {
         val rc = 1.0f / (2.0f * PI.toFloat() * cutoffFreq)
         val dt = 1.0f / sampleRate
@@ -33,16 +33,12 @@ object AudioFilter {
 
     /**
      * Análisis de frecuencias MEJORADO usando ZCR + Autocorrelación.
-     *
-     * Combina:
-     * 1. Zero-Crossing Rate (ZCR) - mide contenido de alta frecuencia
-     * 2. Autocorrelación - detecta periodicidad (voz tiene más estructura)
-     * 3. Análisis de ventanas - verifica consistencia temporal
+     * ✅ AJUSTADO para 44.1kHz
      */
     fun analyzeFrequencyBands(
         samples: ShortArray,
         length: Int,
-        sampleRate: Int = 16000
+        sampleRate: Int = 44100
     ): FrequencyAnalysis {
 
         // ===== 1. CALCULAR ZCR =====
@@ -63,7 +59,7 @@ object AudioFilter {
         }
 
         // ===== 3. AUTOCORRELACIÓN (detecta periodicidad) =====
-        val periodicity = calculatePeriodicity(samples, length)
+        val periodicity = calculatePeriodicity(samples, length, sampleRate)
 
         // ===== 4. ANÁLISIS POR VENTANAS =====
         val numWindows = 4
@@ -85,9 +81,10 @@ object AudioFilter {
 
             val windowZCR = windowZC.toFloat() / (end - start)
 
-            if (windowZCR > 0.15f) {
+            // ✅ Ajustado para 44.1kHz: umbrales más altos porque hay más samples
+            if (windowZCR > 0.20f) {
                 highFreqWindows++
-            } else if (windowZCR < 0.08f) {
+            } else if (windowZCR < 0.10f) {
                 lowFreqWindows++
             }
         }
@@ -102,29 +99,26 @@ object AudioFilter {
 
         when {
             // Caso 1: Altavoz típico (ZCR bajo, baja periodicidad)
-            zcr < 0.065f && periodicity < 0.3f -> {
+            zcr < 0.08f && periodicity < 0.3f -> {
                 lowEnergy = 0.75f
                 midEnergy = 0.20f
                 highEnergy = 0.05f
             }
 
             // Caso 2: Voz real (ZCR medio-alto, alta periodicidad)
-            zcr in 0.072f..0.35f && periodicity > 0.4f -> {
+            zcr in 0.09f..0.40f && periodicity > 0.4f -> {
                 lowEnergy = 0.20f
                 midEnergy = 0.48f
                 highEnergy = 0.32f
             }
 
             // Caso 3: Posible mezcla (eco + voz)
-            zcr in 0.065f..0.15f -> {
-                // Usar ventanas para decidir
+            zcr in 0.08f..0.18f -> {
                 if (highFreqRatio > 0.5f) {
-                    // Más alta frecuencia = voz
                     lowEnergy = 0.30f
                     midEnergy = 0.45f
                     highEnergy = 0.25f
                 } else {
-                    // Más baja frecuencia = altavoz
                     lowEnergy = 0.60f
                     midEnergy = 0.30f
                     highEnergy = 0.10f
@@ -132,7 +126,7 @@ object AudioFilter {
             }
 
             // Caso 4: Señal muy aguda o sibilante
-            zcr > 0.35f -> {
+            zcr > 0.40f -> {
                 lowEnergy = 0.10f
                 midEnergy = 0.35f
                 highEnergy = 0.55f
@@ -160,15 +154,19 @@ object AudioFilter {
 
     /**
      * Calcula periodicidad usando autocorrelación simplificada.
-     * Valores altos (>0.5) indican señal periódica (voz estructurada).
-     * Valores bajos (<0.3) indican señal caótica (altavoz/ruido).
+     * ✅ AJUSTADO para 44.1kHz: lags escalados ~2.76x
      */
-    private fun calculatePeriodicity(samples: ShortArray, length: Int): Float {
-        if (length < 40) return 0f
+    private fun calculatePeriodicity(
+        samples: ShortArray,
+        length: Int,
+        sampleRate: Int = 44100
+    ): Float {
+        if (length < 110) return 0f
 
-        // Buscar autocorrelación en el rango de pitch de voz (80-300Hz @ 16kHz)
-        val minLag = 50  // ~320Hz
-        val maxLag = 200 // ~80Hz
+        // ✅ Rango de pitch de voz a 44.1kHz:
+        // 80-300Hz → lags de 147 a 551
+        val minLag = 147  // ~300Hz
+        val maxLag = 551  // ~80Hz
 
         var maxCorr = 0.0
         var energy = 0.0
@@ -213,77 +211,44 @@ object AudioFilter {
     ) {
         /**
          * Detecta si es eco del altavoz con MÚLTIPLES criterios.
-         * ✅ MÁS ESTRICTO - Rechaza ruido y altavoz mejor
+         * ⚠️ ULTRA PERMISIVO - Solo rechaza eco OBVIO
          */
         fun isLikelySpeakerEcho(): Boolean {
-            // Criterio 1: ZCR bajo (típico de altavoz/ruido)
-            if (zeroCrossingRate < 0.065f) {
+            // ✅ SOLO rechazar si es EXTREMADAMENTE obvio que es eco
+
+            // Criterio 1: ZCR EXTREMADAMENTE bajo + TODOS los demás indicadores
+            if (zeroCrossingRate < 0.03f &&
+                lowBandEnergy > 0.85f &&
+                periodicity < 0.01f &&
+                highFreqWindowRatio == 0f) {
                 return true
             }
 
-            // Criterio 2: Energía MUY dominada por graves
-            if (lowBandEnergy > 0.65f) {
+            // Criterio 2: Sin ninguna ventana de alta frecuencia + graves extremos
+            if (highFreqWindowRatio == 0f &&
+                lowFreqWindowRatio > 0.95f &&
+                lowBandEnergy > 0.85f) {
                 return true
             }
 
-            // Criterio 3: Combinación de ZCR bajo-medio + muchos graves
-            if (zeroCrossingRate < 0.090f && lowBandEnergy > 0.58f) {
-                return true
-            }
-
-            // Criterio 4: Casi SIN energía en agudos + muchos graves
-            if (highBandEnergy < 0.10f && lowBandEnergy > 0.55f) {
-                return true
-            }
-
-            // Criterio 5: Baja periodicidad Y baja-media frecuencia
-            if (periodicity < 0.15f && zeroCrossingRate < 0.080f) {
-                return true
-            }
-
-            // Criterio 6: Mayoría de ventanas con baja frecuencia
-            if (lowFreqWindowRatio > 0.80f) {
-                return true
-            }
-
-            // Criterio 7: SIN ventanas de alta frecuencia (típico ruido ambiente)
-            if (highFreqWindowRatio == 0f && zeroCrossingRate < 0.100f) {
-                return true
-            }
-
+            // Por defecto: NO es eco (aceptar casi todo)
             return false
         }
 
         /**
          * Detecta voz humana real con MÚLTIPLES criterios.
-         * ✅ MÁS ESTRICTO - Requiere señales claras de voz
+         * ⚠️ ULTRA PERMISIVO - Acepta casi cualquier cosa con algo de energía
          */
         fun isLikelyRealVoice(): Boolean {
-            // Criterio 1: ZCR debe estar en rango típico de voz
-            if (zeroCrossingRate < 0.070f) {  // Subido desde 0.058
+            // ✅ Solo verificar que NO sea silencio absoluto
+
+            // Criterio único: Algo de energía en cualquier banda
+            val totalEnergy = lowBandEnergy + midBandEnergy + highBandEnergy
+            if (totalEnergy < 0.50f) {
                 return false
             }
 
-            if (zeroCrossingRate > 0.45f) {
-                return false
-            }
-
-            // Criterio 2: Debe tener energía razonable en medias-altas
-            val combinedMidHigh = midBandEnergy + highBandEnergy
-            if (combinedMidHigh < 0.32f) {  // Subido desde 0.28
-                return false
-            }
-
-            // Criterio 3: No debe ser dominado por graves
-            if (lowBandEnergy > 0.68f) {  // Bajado desde 0.72
-                return false
-            }
-
-            // Criterio 4: Debe tener AL MENOS 1 ventana con alta frecuencia
-            if (highFreqWindowRatio == 0f) {
-                return false
-            }
-
+            // Todo lo demás es aceptado como posible voz
             return true
         }
 

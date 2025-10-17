@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AudioPlayback(
     private val onPlaybackComplete: (() -> Unit)? = null,
     private val onPlaybackStopped: (() -> Unit)? = null,
-    private val onPlaybackBuffer: ((ShortArray) -> Unit)? = null // 🧠 NUEVO: callback far-end
+    private val onPlaybackBuffer: ((ShortArray) -> Unit)? = null // 🧠 Callback far-end
 ) {
     @Volatile
     private var audioTrack: AudioTrack? = null
@@ -32,6 +32,9 @@ class AudioPlayback(
         buffer.position(22)
         val channels = buffer.short.toInt()
         val sampleRate = buffer.int
+
+        Timber.i("📄 WAV Header: sampleRate=$sampleRate, channels=$channels")
+
         return WavHeader(sampleRate, channels)
     }
 
@@ -41,6 +44,13 @@ class AudioPlayback(
         playbackJob = CoroutineScope(Dispatchers.IO).launch {
             try {
                 val header = parseHeader(stream)
+
+                // ✅ CRÍTICO: Verificar que sea 44.1kHz
+                if (header.sampleRate != 44100) {
+                    Timber.w("⚠️ WAV file is ${header.sampleRate}Hz, not 44100Hz!")
+                    Timber.w("   This may cause sync issues with VAD @ 44.1kHz")
+                }
+
                 val bufferSize = AudioTrack.getMinBufferSize(
                     header.sampleRate,
                     if (header.channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO,
@@ -73,6 +83,7 @@ class AudioPlayback(
 
                 val buffer = ByteArray(bufferSize)
                 var bytesRead = stream.read(buffer)
+                var totalFramesSent = 0
 
                 while (!stopRequested.get() && bytesRead > 0) {
                     // Convertir a ShortArray para callback VAD
@@ -82,15 +93,27 @@ class AudioPlayback(
                         .asShortBuffer()
                         .get(shortBuffer)
 
-                    // 🔊 Enviar al altavoz
+                    // 📊 Enviar al altavoz
                     val written = track.write(shortBuffer, 0, shortBuffer.size)
                     if (written <= 0 || stopRequested.get()) break
 
-                    // 🧠 Enviar al VAD la referencia far-end
-                    onPlaybackBuffer?.invoke(shortBuffer)
+                    // 🧠 CRÍTICO: Enviar al VAD la referencia far-end
+                    try {
+                        onPlaybackBuffer?.invoke(shortBuffer)
+                        totalFramesSent++
+
+                        // Log cada 100 frames (~1.16s @ 44.1kHz)
+                        if (totalFramesSent % 100 == 0) {
+                            Timber.v("📡 Sent $totalFramesSent far-end buffers to VAD")
+                        }
+                    } catch (e: Exception) {
+                        Timber.e(e, "❌ Error sending far-end buffer to VAD")
+                    }
 
                     bytesRead = stream.read(buffer)
                 }
+
+                Timber.i("📡 Total far-end buffers sent: $totalFramesSent")
 
                 if (stopRequested.get()) {
                     Timber.w("🛑 Playback interrupted")
@@ -101,7 +124,7 @@ class AudioPlayback(
                 }
 
             } catch (e: Exception) {
-                Timber.e(e, "Playback error")
+                Timber.e(e, "❌ Playback error")
             } finally {
                 cleanup()
             }

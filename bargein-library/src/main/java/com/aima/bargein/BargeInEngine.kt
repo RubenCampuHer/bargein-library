@@ -2,6 +2,8 @@ package com.aima.bargein
 
 import android.Manifest
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import androidx.annotation.RequiresPermission
 import com.aima.bargein.aec.AcousticEchoCancelerFactory
 import com.aima.bargein.aec.IAcousticEchoCanceler
@@ -41,17 +43,20 @@ class BargeInEngine(
 
     private var voiceDetectionStartTime = 0L
     private var consecutiveVoiceFrames = 0L
-    private val minVoiceFrames = (config.minVoiceDurationMs / 10).coerceAtLeast(1)
+    private val minVoiceFrames = (config.minVoiceDurationMs / 11.6).toLong().coerceAtLeast(1) // ✅ ~11.6ms/frame @ 44.1kHz
 
     private val engineScope = CoroutineScope(AudioThreadConfig.audioDispatcher + SupervisorJob())
 
+    // ✅ NUEVO: Handler para delays
+    private val handler = Handler(Looper.getMainLooper())
+
     init {
         Timber.i("🚀 BargeInEngine created with config: $config")
-        Timber.i("📊 minVoiceFrames = $minVoiceFrames (${config.minVoiceDurationMs}ms)")
+        Timber.i("📊 minVoiceFrames = $minVoiceFrames (${config.minVoiceDurationMs}ms @ 44.1kHz)")
     }
 
     fun initialize() {
-        Timber.d("🔧 Initializing BargeInEngine...")
+        Timber.d("🔧 Initializing BargeInEngine @ 44.1kHz...")
 
         if (!PermissionHelper.hasRequiredPermissions(context)) {
             val error = BargeInError(
@@ -63,11 +68,11 @@ class BargeInEngine(
         }
 
         try {
-            // 1. Inicializar componentes de audio PRIMERO
+            // 1. Inicializar audio @ 44.1kHz
             initializeAudioComponents()
-            Timber.d("✅ Audio components initialized")
+            Timber.d("✅ Audio components initialized @ 44.1kHz")
 
-            // 2. Inicializar AEC (NO CRÍTICO - puede fallar)
+            // 2. Inicializar AEC (NO CRÍTICO)
             try {
                 aec = AcousticEchoCancelerFactory.create(
                     audioSessionId = 0,
@@ -112,10 +117,10 @@ class BargeInEngine(
                 throw IllegalStateException(error.message)
             }
 
-            Timber.i("✅ VAD initialized: type=${vad?.getType()}")
+            Timber.i("✅ VAD initialized: type=${vad?.getType()} @ ${config.sampleRate}Hz")
 
             updateState(BargeInState.IDLE)
-            Timber.i("✅ BargeInEngine initialized successfully")
+            Timber.i("✅ BargeInEngine initialized successfully @ 44.1kHz")
 
         } catch (e: Exception) {
             Timber.e(e, "❌ Error initializing BargeInEngine")
@@ -149,7 +154,7 @@ class BargeInEngine(
             bargeInTriggered.set(false)
 
             updateState(BargeInState.LISTENING)
-            Timber.i("🎤 Listening started")
+            Timber.i("🎤 Listening started @ 44.1kHz")
 
         } catch (e: Exception) {
             Timber.e(e, "❌ Error starting listening")
@@ -171,6 +176,7 @@ class BargeInEngine(
 
         Timber.i("🛑 Stopping listening...")
 
+        // ✅ Detener captura primero
         audioCapture.stopCapture()
         audioFocusManager.abandonAudioFocus()
         isListening.set(false)
@@ -203,21 +209,24 @@ class BargeInEngine(
 
             isPlaying.set(true)
 
-            // Notificar al VAD que HAY reproducción
-            (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(true)
-            Timber.i("🔊 VAD notified: playback ACTIVE")
+            // ✅ CAMBIO CRÍTICO: NO notificar aún al VAD
+            Timber.i("🎵 Starting audio playback @ 44.1kHz")
+            Timber.i("⏳ Waiting 350ms for AudioTrack to start before calibration...")
 
-            // Iniciar reproducción
+            // Iniciar reproducción primero
             audioPlayback.playWav(audioStream)
 
-            Timber.i("🎵 Audio playback started")
+            // ✅ NUEVO: Esperar 350ms antes de activar calibración
+            handler.postDelayed({
+                if (isPlaying.get()) {
+                    (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(true)
+                    Timber.i("🎯 VAD notified: playback ACTIVE (calibrating NOW with real audio...)")
+                }
+            }, 350) // Dar tiempo a que AudioTrack empiece a sonar
 
         } catch (e: Exception) {
             Timber.e(e, "❌ Error playing audio")
             isPlaying.set(false)
-
-            // Revertir estado del VAD
-            (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
 
             val error = BargeInError(
                 ErrorCode.AUDIO_PLAYBACK_FAILED,
@@ -236,6 +245,9 @@ class BargeInEngine(
 
         Timber.i("⏸️ Stopping playback...")
 
+        // ✅ Cancelar cualquier delayed task pendiente
+        handler.removeCallbacksAndMessages(null)
+
         val stopTimestamp = System.nanoTime()
         audioPlayback.stopImmediately()
         isPlaying.set(false)
@@ -249,7 +261,7 @@ class BargeInEngine(
     }
 
     /**
-     * Detiene solo la reproducción de audio, mantiene el micrófono activo.
+     * ✅ Detiene solo la reproducción, mantiene el micrófono activo.
      */
     fun stopAudioPlayback() {
         stopPlayback()
@@ -258,6 +270,7 @@ class BargeInEngine(
     fun release() {
         Timber.d("🔧 Releasing BargeInEngine...")
 
+        handler.removeCallbacksAndMessages(null)
         stopListening()
         cleanup()
         engineScope.cancel()
@@ -278,7 +291,7 @@ class BargeInEngine(
 
     private fun initializeAudioComponents() {
         audioCapture = AudioCapture(
-            sampleRate = config.sampleRate,
+            sampleRate = config.sampleRate, // ✅ 44100
             onAudioData = { audioData, timestamp ->
                 processAudioFrame(audioData, timestamp)
             }
@@ -294,6 +307,10 @@ class BargeInEngine(
                 isPlaying.set(false)
                 (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
                 Timber.d("🛑 Playback stopped by barge-in")
+            },
+            onPlaybackBuffer = { farEndBuffer ->
+                // ✅ Enviar referencia far-end al VAD
+                (vad as? EnergyVoiceActivityDetector)?.processFarEndReference(farEndBuffer)
             }
         )
     }
@@ -336,10 +353,6 @@ class BargeInEngine(
 
         consecutiveVoiceFrames++
 
-        Timber.v("🔊 Voice frame #${consecutiveVoiceFrames} (need $minVoiceFrames), " +
-                "conf=${String.format("%.2f", vadResult.confidence)}, " +
-                "energy=${String.format("%.1f", vadResult.energyDb)}dB")
-
         // Verificar si se alcanzó el mínimo de frames
         if (consecutiveVoiceFrames >= minVoiceFrames) {
             triggerBargeIn(vadResult, timestamp)
@@ -352,7 +365,6 @@ class BargeInEngine(
     ) {
         // Evitar múltiples triggers
         if (bargeInTriggered.getAndSet(true)) {
-            Timber.v("⚠️ Barge-in already triggered, ignoring")
             return
         }
 
@@ -365,6 +377,7 @@ class BargeInEngine(
 
         Timber.i("🚨 BARGE-IN TRIGGERED! " +
                 "frames=$consecutiveVoiceFrames, " +
+                "minRequired=$minVoiceFrames, " +
                 "conf=${String.format("%.2f", vadResult.confidence)}, " +
                 "energy=${String.format("%.1f", vadResult.energyDb)}dB")
 

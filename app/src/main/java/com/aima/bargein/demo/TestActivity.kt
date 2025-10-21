@@ -1,16 +1,15 @@
 package com.aima.bargein.demo
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.TextView
+import android.widget.*
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -37,38 +36,162 @@ class TestActivity : AppCompatActivity(), BargeInListener {
     private lateinit var btnPlayTest: Button
     private lateinit var btnStopTest: Button
     private lateinit var btnModeSuperSensitive: Button
-    private lateinit var btnModeSensitive: Button
+    private lateinit var btnModeSensible: Button
     private lateinit var btnModeNormal: Button
+    private lateinit var btnModeCustom: Button
+    private lateinit var btnEditCustom: Button
+    private lateinit var btnSavePreset: Button
+    private lateinit var btnLoadPreset: Button
 
     private var wavFile: File? = null
     private var isTestRunning = false
 
-    // ✅ Modos calibrados para 44.1kHz (512 samples/frame = ~11.6ms)
+    // Modos con CUSTOM
     private enum class SensitivityMode {
-        SUPER_SENSITIVE,  // 2 frames (~25ms) - conf 0.40
-        SENSITIVE,        // 3 frames (~36ms) - conf 0.45
-        NORMAL            // 4 frames (~48ms) - conf 0.50
+        SUPER_SENSITIVE,
+        SENSITIVE,
+        NORMAL,
+        CUSTOM
     }
 
     private var currentMode = SensitivityMode.SENSITIVE
 
+    // Parámetros custom editables
+    private var customDeltaVoiceThresholdDb = 13f
+    private var customMinAbsoluteVoiceEnergyDb = -26f
+    private var customMaxZcrForVoice = 0.18f
+    private var customDeltaBaselineAdjustmentFactor = 0.72f
+    private var customMinVoiceDurationMs = 48L
+    private var customVoiceConfidenceThreshold = 0.56f
+    private var customCalibrationDurationMs = 200L
+    private var customPreDelayMs = 350L
+
     private val handler = Handler(Looper.getMainLooper())
+
+    // SharedPreferences para persistencia
+    private val prefs by lazy {
+        getSharedPreferences("BargeInCustomPrefs", Context.MODE_PRIVATE)
+    }
+
+    // ✅ NUEVO: Gestor de presets
+    private lateinit var presetManager: PresetManager
 
     companion object {
         private const val PERMISSION_REQUEST_CODE = 100
+
+        // Claves para SharedPreferences
+        private const val PREF_CURRENT_MODE = "currentMode"
+        private const val PREF_DELTA_THRESHOLD = "deltaVoiceThresholdDb"
+        private const val PREF_MIN_ENERGY = "minAbsoluteVoiceEnergyDb"
+        private const val PREF_MAX_ZCR = "maxZcrForVoice"
+        private const val PREF_BASELINE_FACTOR = "deltaBaselineAdjustmentFactor"
+        private const val PREF_MIN_DURATION = "minVoiceDurationMs"
+        private const val PREF_CONFIDENCE = "voiceConfidenceThreshold"
+        private const val PREF_CALIBRATION_TIME = "calibrationDurationMs"
+        private const val PREF_PRE_DELAY = "preDelayMs"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         Timber.plant(Timber.DebugTree())
-        Timber.i("🚀 TestActivity started @ 44.1kHz - Delta detection mode")
+        Timber.i("🚀 TestActivity started @ 44.1kHz - Custom Mode + Presets")
+
+        // ✅ Inicializar PresetManager
+        presetManager = PresetManager(this)
+
+        // Cargar configuración guardada ANTES de setupUI
+        loadCustomSettings()
 
         setupUI()
         checkPermissions()
     }
 
+    /**
+     * ✅ Carga configuración guardada desde SharedPreferences
+     */
+    private fun loadCustomSettings() {
+        customDeltaVoiceThresholdDb = prefs.getFloat(PREF_DELTA_THRESHOLD, 13f)
+        customMinAbsoluteVoiceEnergyDb = prefs.getFloat(PREF_MIN_ENERGY, -26f)
+        customMaxZcrForVoice = prefs.getFloat(PREF_MAX_ZCR, 0.18f)
+        customDeltaBaselineAdjustmentFactor = prefs.getFloat(PREF_BASELINE_FACTOR, 0.72f)
+        customMinVoiceDurationMs = prefs.getLong(PREF_MIN_DURATION, 48L)
+        customVoiceConfidenceThreshold = prefs.getFloat(PREF_CONFIDENCE, 0.56f)
+        customCalibrationDurationMs = prefs.getLong(PREF_CALIBRATION_TIME, 200L)
+        customPreDelayMs = prefs.getLong(PREF_PRE_DELAY, 350L)
+
+        // Cargar modo guardado
+        val savedMode = prefs.getString(PREF_CURRENT_MODE, "SENSITIVE") ?: "SENSITIVE"
+        currentMode = try {
+            SensitivityMode.valueOf(savedMode)
+        } catch (e: Exception) {
+            SensitivityMode.SENSITIVE
+        }
+
+        Timber.i("📥 Settings loaded: Mode=$currentMode, Delta=${customDeltaVoiceThresholdDb}dB")
+    }
+
+    /**
+     * ✅ Guarda configuración actual en SharedPreferences
+     */
+    private fun saveCustomSettings() {
+        prefs.edit().apply {
+            putString(PREF_CURRENT_MODE, currentMode.name)
+            putFloat(PREF_DELTA_THRESHOLD, customDeltaVoiceThresholdDb)
+            putFloat(PREF_MIN_ENERGY, customMinAbsoluteVoiceEnergyDb)
+            putFloat(PREF_MAX_ZCR, customMaxZcrForVoice)
+            putFloat(PREF_BASELINE_FACTOR, customDeltaBaselineAdjustmentFactor)
+            putLong(PREF_MIN_DURATION, customMinVoiceDurationMs)
+            putFloat(PREF_CONFIDENCE, customVoiceConfidenceThreshold)
+            putLong(PREF_CALIBRATION_TIME, customCalibrationDurationMs)
+            putLong(PREF_PRE_DELAY, customPreDelayMs)
+            apply()
+        }
+
+        Timber.i("💾 Settings saved: Mode=$currentMode, Delta=${customDeltaVoiceThresholdDb}dB")
+    }
+
+    /**
+     * ✅ Guarda el estado antes de destruir la actividad (por rotación)
+     */
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+
+        // Guardar configuración actual
+        saveCustomSettings()
+
+        // Guardar estado del test
+        outState.putBoolean("isTestRunning", isTestRunning)
+        outState.putString("currentMode", currentMode.name)
+
+        Timber.d("💾 State saved for rotation")
+    }
+
+    /**
+     * ✅ Restaura el estado después de recrear la actividad (por rotación)
+     */
+    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
+        super.onRestoreInstanceState(savedInstanceState)
+
+        // Cargar configuración
+        loadCustomSettings()
+
+        // Restaurar modo
+        val savedMode = savedInstanceState.getString("currentMode", "SENSITIVE")
+        currentMode = try {
+            SensitivityMode.valueOf(savedMode)
+        } catch (e: Exception) {
+            SensitivityMode.SENSITIVE
+        }
+
+        updateModeButtons()
+
+        Timber.d("📥 State restored after rotation")
+    }
+
     private fun setupUI() {
+        val scrollView = ScrollView(this)
+
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 24, 24, 24)
@@ -85,7 +208,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         })
 
         layout.addView(TextView(this).apply {
-            text = "@ 44.1kHz • Delta Detection • 350ms Pre-Cal"
+            text = "@ 44.1kHz • Adaptive Δ Detection • Presets"
             textSize = 14f
             setTextColor(Color.parseColor("#757575"))
             gravity = Gravity.CENTER
@@ -124,9 +247,9 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             text = """
                 Análisis @ 44.1kHz:
                 • High-Pass: 600Hz (preserva voz)
-                • Detección por Delta: >12dB = voz
-                • Calibración: 200ms con audio real
-                • Pre-delay: 350ms antes de calibrar
+                • Delta adaptativo según volumen
+                • Calibración dinámica
+                • Sistema de Presets
             """.trimIndent()
             textSize = 12f
             setTextColor(Color.parseColor("#757575"))
@@ -165,7 +288,8 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             setPadding(0, 0, 0, 8)
         })
 
-        val modeButtonsRow = LinearLayout(this).apply {
+        // Primera fila de botones - Modos predefinidos
+        val modeButtonsRow1 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -177,7 +301,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             changeSensitivityMode(SensitivityMode.SUPER_SENSITIVE)
         }
 
-        btnModeSensitive = createModeButton("🟡 Sensible", Color.parseColor("#FF9800")) {
+        btnModeSensible = createModeButton("🟡 Sensible", Color.parseColor("#FF9800")) {
             changeSensitivityMode(SensitivityMode.SENSITIVE)
         }
 
@@ -185,11 +309,58 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             changeSensitivityMode(SensitivityMode.NORMAL)
         }
 
-        modeButtonsRow.addView(btnModeSuperSensitive)
-        modeButtonsRow.addView(btnModeSensitive)
-        modeButtonsRow.addView(btnModeNormal)
+        modeButtonsRow1.addView(btnModeSuperSensitive)
+        modeButtonsRow1.addView(btnModeSensible)
+        modeButtonsRow1.addView(btnModeNormal)
 
-        modeContainer.addView(modeButtonsRow)
+        // Segunda fila - Custom
+        val modeButtonsRow2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 8, 0, 0)
+            }
+        }
+
+        btnModeCustom = createModeButton("⚙️ Custom", Color.parseColor("#9C27B0")) {
+            changeSensitivityMode(SensitivityMode.CUSTOM)
+        }
+
+        btnEditCustom = createModeButton("✏️ Editar", Color.parseColor("#673AB7")) {
+            showCustomSettingsDialog()
+        }
+
+        modeButtonsRow2.addView(btnModeCustom)
+        modeButtonsRow2.addView(btnEditCustom)
+
+        // ✅ Tercera fila - Presets
+        val presetButtonsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 8, 0, 0)
+            }
+        }
+
+        btnSavePreset = createModeButton("💾 Guardar", Color.parseColor("#00897B")) {
+            showSavePresetDialog()
+        }
+
+        btnLoadPreset = createModeButton("📂 Cargar", Color.parseColor("#00ACC1")) {
+            showLoadPresetDialog()
+        }
+
+        presetButtonsRow.addView(btnSavePreset)
+        presetButtonsRow.addView(btnLoadPreset)
+
+        modeContainer.addView(modeButtonsRow1)
+        modeContainer.addView(modeButtonsRow2)
+        modeContainer.addView(presetButtonsRow)
+
         layout.addView(modeContainer)
 
         // ===== BOTONES DE CONTROL =====
@@ -211,8 +382,507 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         }
         layout.addView(btnStopTest)
 
-        setContentView(layout)
+        scrollView.addView(layout)
+        setContentView(scrollView)
     }
+
+    // ===== GESTIÓN DE PRESETS =====
+
+    /**
+     * ✅ Muestra diálogo para guardar preset actual
+     */
+    private fun showSavePresetDialog() {
+        val input = EditText(this).apply {
+            hint = "Nombre del preset (ej: Volumen Alto)"
+            setPadding(40, 20, 40, 20)
+        }
+
+        // Sugerir nombre basado en parámetros
+        val suggestedName = generatePresetName()
+        input.setText(suggestedName)
+        input.selectAll()
+
+        AlertDialog.Builder(this)
+            .setTitle("💾 Guardar Preset")
+            .setMessage("Guardará la configuración Custom actual")
+            .setView(input)
+            .setPositiveButton("Guardar") { _, _ ->
+                val name = input.text.toString().trim()
+
+                if (name.isEmpty()) {
+                    Toast.makeText(this, "❌ El nombre no puede estar vacío", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                if (name.length > 30) {
+                    Toast.makeText(this, "❌ Nombre demasiado largo (máx 30 caracteres)", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                // Crear preset con configuración actual
+                val preset = PresetManager.VadPreset(
+                    name = name,
+                    deltaVoiceThresholdDb = customDeltaVoiceThresholdDb,
+                    minAbsoluteVoiceEnergyDb = customMinAbsoluteVoiceEnergyDb,
+                    maxZcrForVoice = customMaxZcrForVoice,
+                    deltaBaselineAdjustmentFactor = customDeltaBaselineAdjustmentFactor,
+                    minVoiceDurationMs = customMinVoiceDurationMs,
+                    voiceConfidenceThreshold = customVoiceConfidenceThreshold,
+                    calibrationDurationMs = customCalibrationDurationMs,
+                    preDelayMs = customPreDelayMs
+                )
+
+                val existed = presetManager.presetExists(name)
+
+                if (presetManager.savePreset(preset)) {
+                    val message = if (existed) {
+                        "✅ Preset '$name' actualizado"
+                    } else {
+                        "✅ Preset '$name' guardado"
+                    }
+                    Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+                    Timber.i(message)
+                } else {
+                    Toast.makeText(this, "❌ Error guardando preset", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    /**
+     * ✅ Genera nombre sugerido basado en parámetros
+     */
+    private fun generatePresetName(): String {
+        val deltaStr = customDeltaVoiceThresholdDb.toInt()
+        val factorStr = (customDeltaBaselineAdjustmentFactor * 100).toInt()
+        return "Config Δ${deltaStr} F${factorStr}"
+    }
+
+    /**
+     * ✅ Muestra diálogo para cargar preset guardado
+     */
+    private fun showLoadPresetDialog() {
+        val presets = presetManager.getAllPresets()
+
+        if (presets.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("📂 Cargar Preset")
+                .setMessage("No hay presets guardados aún.\n\nPrimero ajusta los parámetros en modo Custom y luego usa '💾 Guardar'.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+
+        // Crear layout para la lista
+        val scrollView = ScrollView(this)
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(20, 20, 20, 20)
+        }
+
+        presets.forEach { preset ->
+            val presetCard = createPresetCard(preset)
+            layout.addView(presetCard)
+        }
+
+        scrollView.addView(layout)
+
+        AlertDialog.Builder(this)
+            .setTitle("📂 Cargar Preset (${presets.size})")
+            .setView(scrollView)
+            .setNegativeButton("Cerrar", null)
+            .setNeutralButton("🗑️ Gestionar") { _, _ ->
+                showManagePresetsDialog()
+            }
+            .show()
+    }
+
+    /**
+     * ✅ Crea tarjeta visual para un preset
+     */
+    private fun createPresetCard(preset: PresetManager.VadPreset): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16, 12, 16, 12)
+            setBackgroundColor(Color.parseColor("#E8F5E9"))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(0, 0, 0, 12)
+            }
+
+            // Nombre
+            addView(TextView(this@TestActivity).apply {
+                text = "📌 ${preset.name}"
+                textSize = 16f
+                setTextColor(Color.parseColor("#1B5E20"))
+                setTypeface(null, android.graphics.Typeface.BOLD)
+            })
+
+            // Descripción
+            addView(TextView(this@TestActivity).apply {
+                text = preset.getDescription()
+                textSize = 12f
+                setTextColor(Color.parseColor("#2E7D32"))
+                setPadding(0, 4, 0, 8)
+            })
+
+            // Fecha
+            addView(TextView(this@TestActivity).apply {
+                val date = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale.getDefault())
+                    .format(java.util.Date(preset.timestamp))
+                text = "🕐 $date"
+                textSize = 11f
+                setTextColor(Color.parseColor("#558B2F"))
+                setPadding(0, 0, 0, 8)
+            })
+
+            // Botón cargar
+            addView(Button(this@TestActivity).apply {
+                text = "✅ Cargar este preset"
+                setBackgroundColor(Color.parseColor("#4CAF50"))
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    loadPresetConfiguration(preset)
+
+                    // Cerrar el diálogo actual
+                    (parent?.parent?.parent as? AlertDialog)?.dismiss()
+                }
+            })
+        }
+    }
+
+    /**
+     * ✅ Carga configuración desde preset
+     */
+    private fun loadPresetConfiguration(preset: PresetManager.VadPreset) {
+        customDeltaVoiceThresholdDb = preset.deltaVoiceThresholdDb
+        customMinAbsoluteVoiceEnergyDb = preset.minAbsoluteVoiceEnergyDb
+        customMaxZcrForVoice = preset.maxZcrForVoice
+        customDeltaBaselineAdjustmentFactor = preset.deltaBaselineAdjustmentFactor
+        customMinVoiceDurationMs = preset.minVoiceDurationMs
+        customVoiceConfidenceThreshold = preset.voiceConfidenceThreshold
+        customCalibrationDurationMs = preset.calibrationDurationMs
+        customPreDelayMs = preset.preDelayMs
+
+        // Guardar como configuración actual
+        saveCustomSettings()
+
+        // Marcar como último usado
+        presetManager.setLastUsedPreset(preset.name)
+
+        // Cambiar a modo Custom
+        if (currentMode != SensitivityMode.CUSTOM) {
+            changeSensitivityMode(SensitivityMode.CUSTOM)
+        } else if (::engine.isInitialized && !isTestRunning) {
+            // Si ya estaba en Custom, solo reiniciar engine
+            try {
+                engine.release()
+                initializeEngine()
+
+                statusText.text = """
+                    ✅ Preset '${preset.name}' cargado
+                    
+                    ${preset.getDescription()}
+                    
+                    🎤 Sistema listo (inactivo)
+                    Presiona "INICIAR TEST" para probar
+                """.trimIndent()
+            } catch (e: Exception) {
+                Timber.e(e, "Error reinitializing with preset")
+            }
+        }
+
+        Toast.makeText(this, "✅ Preset '${preset.name}' cargado", Toast.LENGTH_SHORT).show()
+        Timber.i("📂 Preset '${preset.name}' loaded")
+    }
+
+    /**
+     * ✅ Muestra diálogo para gestionar (eliminar/exportar) presets
+     */
+    private fun showManagePresetsDialog() {
+        val presets = presetManager.getAllPresets()
+
+        if (presets.isEmpty()) {
+            Toast.makeText(this, "No hay presets para gestionar", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val presetNames = presets.map { it.name }.toTypedArray()
+        val checkedItems = BooleanArray(presets.size) { false }
+
+        AlertDialog.Builder(this)
+            .setTitle("🗑️ Gestionar Presets")
+            .setMultiChoiceItems(presetNames, checkedItems) { _, which, isChecked ->
+                checkedItems[which] = isChecked
+            }
+            .setPositiveButton("🗑️ Eliminar seleccionados") { _, _ ->
+                val selectedCount = checkedItems.count { it }
+
+                if (selectedCount == 0) {
+                    Toast.makeText(this, "No se seleccionó ningún preset", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                // Confirmar eliminación
+                AlertDialog.Builder(this)
+                    .setTitle("⚠️ Confirmar")
+                    .setMessage("¿Eliminar $selectedCount preset(s)?")
+                    .setPositiveButton("Eliminar") { _, _ ->
+                        var deletedCount = 0
+                        presets.forEachIndexed { index, preset ->
+                            if (checkedItems[index]) {
+                                if (presetManager.deletePreset(preset.name)) {
+                                    deletedCount++
+                                }
+                            }
+                        }
+                        Toast.makeText(this, "✅ $deletedCount preset(s) eliminado(s)", Toast.LENGTH_SHORT).show()
+                    }
+                    .setNegativeButton("Cancelar", null)
+                    .show()
+            }
+            .setNeutralButton("📤 Exportar todos") { _, _ ->
+                exportPresets()
+            }
+            .setNegativeButton("Cerrar", null)
+            .show()
+    }
+
+    /**
+     * ✅ Exporta presets (copia al portapapeles)
+     */
+    private fun exportPresets() {
+        val json = presetManager.exportPresetsAsJson()
+
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        val clip = android.content.ClipData.newPlainText("Barge-In Presets", json)
+        clipboard.setPrimaryClip(clip)
+
+        val count = presetManager.getPresetCount()
+
+        AlertDialog.Builder(this)
+            .setTitle("📤 Presets Exportados")
+            .setMessage("$count preset(s) copiados al portapapeles en formato JSON.\n\nPuedes compartirlos o guardarlos en un archivo.")
+            .setPositiveButton("OK", null)
+            .setNeutralButton("📥 Importar") { _, _ ->
+                showImportPresetsDialog()
+            }
+            .show()
+
+        Toast.makeText(this, "✅ Presets copiados al portapapeles", Toast.LENGTH_LONG).show()
+    }
+
+    /**
+     * ✅ Importa presets desde JSON
+     */
+    private fun showImportPresetsDialog() {
+        val input = EditText(this).apply {
+            hint = "Pega aquí el JSON de presets"
+            setPadding(40, 20, 40, 20)
+            minLines = 5
+            maxLines = 10
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("📥 Importar Presets")
+            .setMessage("Pega el JSON exportado previamente:")
+            .setView(input)
+            .setPositiveButton("Importar") { _, _ ->
+                val json = input.text.toString().trim()
+
+                if (json.isEmpty()) {
+                    Toast.makeText(this, "❌ No se pegó ningún contenido", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                if (presetManager.importPresetsFromJson(json)) {
+                    val count = presetManager.getPresetCount()
+                    Toast.makeText(this, "✅ Presets importados. Total: $count", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "❌ Error: JSON inválido", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    // ===== DIÁLOGO DE CONFIGURACIÓN CUSTOM =====
+
+    private fun showCustomSettingsDialog() {
+        val dialogLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 20, 40, 20)
+        }
+
+        // Crear campos editables para cada parámetro
+        val params = listOf(
+            ParamConfig("Delta Threshold (dB)", customDeltaVoiceThresholdDb, 8f, 20f, "%.1f") { customDeltaVoiceThresholdDb = it },
+            ParamConfig("Min Energy (dB)", customMinAbsoluteVoiceEnergyDb, -35f, -20f, "%.1f") { customMinAbsoluteVoiceEnergyDb = it },
+            ParamConfig("Max ZCR", customMaxZcrForVoice, 0.10f, 0.30f, "%.2f") { customMaxZcrForVoice = it },
+            ParamConfig("Baseline Factor", customDeltaBaselineAdjustmentFactor, 0.5f, 0.9f, "%.2f") { customDeltaBaselineAdjustmentFactor = it },
+            ParamConfig("Min Duration (ms)", customMinVoiceDurationMs.toFloat(), 20f, 100f, "%.0f") { customMinVoiceDurationMs = it.toLong() },
+            ParamConfig("Confidence Threshold", customVoiceConfidenceThreshold, 0.40f, 0.80f, "%.2f") { customVoiceConfidenceThreshold = it },
+            ParamConfig("Calibration Time (ms)", customCalibrationDurationMs.toFloat(), 100f, 500f, "%.0f") { customCalibrationDurationMs = it.toLong() },
+            ParamConfig("Pre-Delay (ms)", customPreDelayMs.toFloat(), 200f
+
+
+                , 500f, "%.0f") { customPreDelayMs = it.toLong() }
+        )
+
+        val seekBars = mutableListOf<Pair<TextView, SeekBar>>()
+
+        params.forEach { param ->
+            // Label
+            val label = TextView(this).apply {
+                text = "${param.name}: ${String.format(param.format, param.currentValue)}"
+                textSize = 14f
+                setTextColor(Color.parseColor("#212121"))
+                setPadding(0, 16, 0, 8)
+            }
+            dialogLayout.addView(label)
+
+            // SeekBar
+            val seekBar = SeekBar(this).apply {
+                max = 100
+                val normalized = ((param.currentValue - param.min) / (param.max - param.min) * 100).toInt()
+                progress = normalized
+
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(seek: SeekBar?, progress: Int, fromUser: Boolean) {
+                        val value = param.min + (progress / 100f) * (param.max - param.min)
+                        label.text = "${param.name}: ${String.format(param.format, value)}"
+                    }
+                    override fun onStartTrackingTouch(seek: SeekBar?) {}
+                    override fun onStopTrackingTouch(seek: SeekBar?) {}
+                })
+            }
+            dialogLayout.addView(seekBar)
+
+            seekBars.add(Pair(label, seekBar))
+        }
+
+        // Botón de reset
+        val btnReset = Button(this).apply {
+            text = "🔄 Restaurar Valores por Defecto"
+            setOnClickListener {
+                // Restaurar a valores de modo SENSIBLE
+                customDeltaVoiceThresholdDb = 13f
+                customMinAbsoluteVoiceEnergyDb = -26f
+                customMaxZcrForVoice = 0.18f
+                customDeltaBaselineAdjustmentFactor = 0.72f
+                customMinVoiceDurationMs = 48L
+                customVoiceConfidenceThreshold = 0.56f
+                customCalibrationDurationMs = 200L
+                customPreDelayMs = 350L
+
+                // Guardar los valores restaurados
+                saveCustomSettings()
+
+                // Actualizar seekbars y labels
+                val restoredParams = listOf(
+                    customDeltaVoiceThresholdDb,
+                    customMinAbsoluteVoiceEnergyDb,
+                    customMaxZcrForVoice,
+                    customDeltaBaselineAdjustmentFactor,
+                    customMinVoiceDurationMs.toFloat(),
+                    customVoiceConfidenceThreshold,
+                    customCalibrationDurationMs.toFloat(),
+                    customPreDelayMs.toFloat()
+                )
+
+                params.forEachIndexed { index, param ->
+                    val (label, seekBar) = seekBars[index]
+                    val value = restoredParams[index]
+                    val normalized = ((value - param.min) / (param.max - param.min) * 100).toInt()
+                    seekBar.progress = normalized
+                    label.text = "${param.name}: ${String.format(param.format, value)}"
+                }
+
+                Toast.makeText(this@TestActivity, "✅ Valores restaurados y guardados", Toast.LENGTH_SHORT).show()
+            }
+        }
+        dialogLayout.addView(btnReset)
+
+        // Info adicional
+        val infoText = TextView(this).apply {
+            text = """
+                
+                ℹ️ Guía Rápida:
+                • Delta ↓ = Más sensible
+                • Min Energy ↓ = Acepta voz más débil
+                • Max ZCR ↑ = Más permisivo con ruido
+                • Factor ↑ = Mejor en volumen alto
+                • Duration ↓ = Respuesta más rápida
+                • Confidence ↓ = Menos exigente
+                • Calibration ↑ = Más preciso
+                • Pre-Delay ↑ = Evita problemas de timing
+            """.trimIndent()
+            textSize = 11f
+            setTextColor(Color.parseColor("#757575"))
+            setPadding(0, 16, 0, 0)
+        }
+        dialogLayout.addView(infoText)
+
+        val scrollView = ScrollView(this).apply {
+            addView(dialogLayout)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("⚙️ Configuración Custom")
+            .setView(scrollView)
+            .setPositiveButton("💾 Guardar") { _, _ ->
+                // Aplicar valores desde seekbars
+                params.forEachIndexed { index, param ->
+                    val progress = seekBars[index].second.progress
+                    val value = param.min + (progress / 100f) * (param.max - param.min)
+                    param.onValueChange(value)
+                }
+
+                // Guardar en SharedPreferences
+                saveCustomSettings()
+
+                Toast.makeText(this, "✅ Configuración guardada", Toast.LENGTH_SHORT).show()
+
+                // Si ya está en modo custom, reiniciar engine
+                if (currentMode == SensitivityMode.CUSTOM && ::engine.isInitialized && !isTestRunning) {
+                    try {
+                        engine.release()
+                        initializeEngine()
+
+                        statusText.text = """
+                            ✅ Configuración Custom actualizada
+                            
+                            ⚙️ CUSTOM
+                            Δ=${customDeltaVoiceThresholdDb}dB • E=${customMinAbsoluteVoiceEnergyDb}dB
+                            ZCR=${customMaxZcrForVoice} • Factor=${customDeltaBaselineAdjustmentFactor}
+                            
+                            🎤 Sistema listo (inactivo)
+                            Presiona "INICIAR TEST" para probar
+                        """.trimIndent()
+                    } catch (e: Exception) {
+                        Timber.e(e, "Error updating custom config")
+                        statusText.text = "❌ Error actualizando config:\n${e.message}"
+                    }
+                }
+            }
+            .setNegativeButton("❌ Cancelar", null)
+            .show()
+    }
+
+    data class ParamConfig(
+        val name: String,
+        val currentValue: Float,
+        val min: Float,
+        val max: Float,
+        val format: String,
+        val onValueChange: (Float) -> Unit
+    )
+
+    // ===== UI HELPERS =====
 
     private fun createCard(): LinearLayout {
         return LinearLayout(this).apply {
@@ -264,6 +934,8 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         }
     }
 
+    // ===== PERMISOS =====
+
     private fun checkPermissions() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
@@ -300,17 +972,28 @@ class TestActivity : AppCompatActivity(), BargeInListener {
 
         try {
             copyWavFromAssets()
-            currentMode = SensitivityMode.SENSITIVE
+
             updateModeButtons()
             initializeEngine()
+
+            val modeInfo = when (currentMode) {
+                SensitivityMode.SUPER_SENSITIVE -> "Modo: 🔴 Super Sensitive"
+                SensitivityMode.SENSITIVE -> "Modo: 🟡 Sensitive"
+                SensitivityMode.NORMAL -> "Modo: 🟢 Normal"
+                SensitivityMode.CUSTOM -> "Modo: ⚙️ Custom"
+            }
+
+            val presetCount = presetManager.getPresetCount()
+            val presetInfo = if (presetCount > 0) "\n💾 $presetCount preset(s) guardado(s)" else ""
 
             statusText.text = """
                 ✅ Sistema listo @ 44.1kHz
                 
+                $modeInfo$presetInfo
                 🎤 Micrófono: LISTO (inactivo)
                 🎚️ High-pass: 600Hz
-                🎯 Delta detection: >12dB
-                ⏱️ Pre-calibración: 350ms
+                🎯 Delta adaptativo activo
+                ⏱️ Pre-calibración: ${customPreDelayMs}ms
                 
                 Presiona "INICIAR TEST" para comenzar
             """.trimIndent()
@@ -330,6 +1013,8 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             """.trimIndent()
         }
     }
+
+    // ===== ENGINE MANAGEMENT =====
 
     private fun copyWavFromAssets() {
         try {
@@ -414,22 +1099,49 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             SensitivityMode.SUPER_SENSITIVE -> BargeInConfig(
                 sampleRate = 44100,
                 vadMode = IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE,
-                minVoiceDurationMs = 25,
-                voiceConfidenceThreshold = 0.40f
+                minVoiceDurationMs = 36,
+                voiceConfidenceThreshold = 0.50f,
+                // ✅ MÁS SENSIBLE - Detecta rápido, permite voz más baja
+                deltaVoiceThresholdDb = 13f,           // Más bajo que Sensible
+                minAbsoluteVoiceEnergyDb = -27f,       // Acepta voz más débil
+                maxZcrForVoice = 0.19f,                // Más permisivo con ruido
+                deltaBaselineAdjustmentFactor = 0.65f  // Ajuste medio-bajo (más estricto que antes)
             )
 
             SensitivityMode.SENSITIVE -> BargeInConfig(
                 sampleRate = 44100,
                 vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
-                minVoiceDurationMs = 36,
-                voiceConfidenceThreshold = 0.45f
+                minVoiceDurationMs = 48,
+                voiceConfidenceThreshold = 0.58f,
+                // ✅ EQUILIBRADO - Balance entre detección y precisión
+                deltaVoiceThresholdDb = 14f,           // Medio
+                minAbsoluteVoiceEnergyDb = -26f,       // Medio
+                maxZcrForVoice = 0.18f,                // Medio
+                deltaBaselineAdjustmentFactor = 0.70f  // Ajuste medio
             )
 
             SensitivityMode.NORMAL -> BargeInConfig(
                 sampleRate = 44100,
                 vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
-                minVoiceDurationMs = 48,
-                voiceConfidenceThreshold = 0.50f
+                minVoiceDurationMs = 54,               // Reducido de 60ms
+                voiceConfidenceThreshold = 0.62f,      // Reducido de 0.65f
+                // ✅ MÁS PERMISIVO - Permite interrumpir durante frases con volumen alto
+                deltaVoiceThresholdDb = 15f,           // Aumentado de 16f (más permisivo)
+                minAbsoluteVoiceEnergyDb = -25f,       // Aumentado de -24f (más permisivo)
+                maxZcrForVoice = 0.17f,                // Aumentado de 0.16f (más permisivo)
+                deltaBaselineAdjustmentFactor = 0.75f  // ✅ CLAVE: Aumentado de 0.6f a 0.75f
+            )
+
+
+            SensitivityMode.CUSTOM -> BargeInConfig(
+                sampleRate = 44100,
+                vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
+                minVoiceDurationMs = customMinVoiceDurationMs,
+                voiceConfidenceThreshold = customVoiceConfidenceThreshold,
+                deltaVoiceThresholdDb = customDeltaVoiceThresholdDb,
+                minAbsoluteVoiceEnergyDb = customMinAbsoluteVoiceEnergyDb,
+                maxZcrForVoice = customMaxZcrForVoice,
+                deltaBaselineAdjustmentFactor = customDeltaBaselineAdjustmentFactor
             )
         }
     }
@@ -455,9 +1167,10 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             initializeEngine()
 
             val modeText = when (newMode) {
-                SensitivityMode.SUPER_SENSITIVE -> "🔴 SUPER SENSIBLE\n25ms • 2 frames • conf=0.40"
-                SensitivityMode.SENSITIVE -> "🟡 SENSIBLE\n36ms • 3 frames • conf=0.45"
-                SensitivityMode.NORMAL -> "🟢 NORMAL\n48ms • 4 frames • conf=0.50"
+                SensitivityMode.SUPER_SENSITIVE -> "🔴 SUPER SENSIBLE\nΔ=13dB • E=-27dB • ZCR=0.19 • Factor=0.65"
+                SensitivityMode.SENSITIVE -> "🟡 SENSIBLE\nΔ=13dB • E=-26dB • ZCR=0.18 • Factor=0.72"
+                SensitivityMode.NORMAL -> "🟢 NORMAL\nΔ=15dB • E=-25dB • ZCR=0.17 • Factor=0.75"
+                SensitivityMode.CUSTOM -> "⚙️ CUSTOM\nΔ=${customDeltaVoiceThresholdDb}dB • E=${customMinAbsoluteVoiceEnergyDb}dB • ZCR=${customMaxZcrForVoice} • Factor=${customDeltaBaselineAdjustmentFactor}"
             }
 
             statusText.text = """
@@ -469,6 +1182,9 @@ class TestActivity : AppCompatActivity(), BargeInListener {
                 Presiona "INICIAR TEST" para probar
             """.trimIndent()
 
+            // Guardar el modo actual
+            saveCustomSettings()
+
             Timber.i("✅ Mode changed successfully to: $newMode")
 
         } catch (e: Exception) {
@@ -479,15 +1195,19 @@ class TestActivity : AppCompatActivity(), BargeInListener {
 
     private fun updateModeButtons() {
         btnModeSuperSensitive.alpha = 0.5f
-        btnModeSensitive.alpha = 0.5f
+        btnModeSensible.alpha = 0.5f
         btnModeNormal.alpha = 0.5f
+        btnModeCustom.alpha = 0.5f
 
         when (currentMode) {
             SensitivityMode.SUPER_SENSITIVE -> btnModeSuperSensitive.alpha = 1.0f
-            SensitivityMode.SENSITIVE -> btnModeSensitive.alpha = 1.0f
+            SensitivityMode.SENSITIVE -> btnModeSensible.alpha = 1.0f
             SensitivityMode.NORMAL -> btnModeNormal.alpha = 1.0f
+            SensitivityMode.CUSTOM -> btnModeCustom.alpha = 1.0f
         }
     }
+
+    // ===== TEST MANAGEMENT =====
 
     private fun startUIUpdates() {
         val updateRunnable = object : Runnable {
@@ -587,8 +1307,14 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         try {
             isTestRunning = true
 
-            // Iniciar captura primero
             engine.startListening()
+
+            val modeInfo = when (currentMode) {
+                SensitivityMode.SUPER_SENSITIVE -> "Δ=13dB, E>-27dB"
+                SensitivityMode.SENSITIVE -> "Δ=13dB, E>-26dB"
+                SensitivityMode.NORMAL -> "Δ=15dB, E>-25dB"
+                SensitivityMode.CUSTOM -> "Δ=${customDeltaVoiceThresholdDb}dB, E>${customMinAbsoluteVoiceEnergyDb}dB"
+            }
 
             statusText.text = """
                 🎵 REPRODUCIENDO AUDIO @ 44.1kHz
@@ -596,18 +1322,16 @@ class TestActivity : AppCompatActivity(), BargeInListener {
                 ¡Interrumpe hablando FUERTE!
                 
                 🎤 Micrófono: ACTIVO
-                ⏳ Pre-delay: 350ms (esperando AudioTrack)
-                🎯 Calibración: 200ms después del delay
-                📊 Detección: Delta >12dB
+                ⏳ Pre-delay: ${customPreDelayMs}ms
+                🎯 Calibración: ${customCalibrationDurationMs}ms
+                📊 Modo: $modeInfo
             """.trimIndent()
 
             btnPlayTest.isEnabled = false
             btnStopTest.isEnabled = true
 
-            // Iniciar UI updates
             startUIUpdates()
 
-            // Iniciar reproducción (con delay interno de 350ms antes de calibrar)
             handler.postDelayed({
                 val inputStream = wavFile!!.inputStream()
                 engine.playAudio(inputStream)
@@ -638,13 +1362,8 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         try {
             Timber.i("🛑 User requested to stop test...")
 
-            // Detener reproducción
             engine.stopAudioPlayback()
-
-            // Detener captura
             engine.stopListening()
-
-            // Detener UI updates
             handler.removeCallbacksAndMessages(null)
 
             isTestRunning = false
@@ -669,12 +1388,11 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         }
     }
 
-    // ========== BargeInListener ==========
+    // ===== BargeInListener CALLBACKS =====
 
     @Suppress("MissingPermission")
     override fun onUserInterruption(event: BargeInEvent) {
         runOnUiThread {
-            // Detener todo
             engine.stopAudioPlayback()
             engine.stopListening()
             handler.removeCallbacksAndMessages(null)
@@ -727,6 +1445,8 @@ class TestActivity : AppCompatActivity(), BargeInListener {
 
         Timber.e("❌ Error: ${error.code} - ${error.message}")
     }
+
+    // ===== LIFECYCLE =====
 
     override fun onDestroy() {
         super.onDestroy()

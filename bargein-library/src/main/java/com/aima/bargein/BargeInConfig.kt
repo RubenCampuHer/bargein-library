@@ -20,7 +20,7 @@ data class BargeInConfig(
     /**
      * Duración mínima de voz para detectar barge-in (ms)
      */
-    val minVoiceDurationMs: Long = 100, // Reducido de 200 a 100ms = ~10 frames
+    val minVoiceDurationMs: Long = 100,
 
     /**
      * Umbral de confianza para detectar voz (0.0 - 1.0)
@@ -35,7 +35,28 @@ data class BargeInConfig(
     /**
      * Preferencia de tipo de VAD
      */
-    val vadPreference: IVoiceActivityDetector.Type = IVoiceActivityDetector.Type.ENERGY
+    val vadPreference: IVoiceActivityDetector.Type = IVoiceActivityDetector.Type.ENERGY,
+
+    // ✅ NUEVO: Parámetros específicos del VAD por modo
+    /**
+     * Umbral de incremento de energía para detectar voz (dB)
+     */
+    val deltaVoiceThresholdDb: Float = 15f,
+
+    /**
+     * Energía mínima absoluta para considerar voz (dB)
+     */
+    val minAbsoluteVoiceEnergyDb: Float = -25f,
+
+    /**
+     * ZCR máximo permitido para voz (0.0 - 1.0)
+     */
+    val maxZcrForVoice: Float = 0.18f,
+
+    /**
+     * Factor de ajuste del delta según baseline (0.0 - 1.0)
+     */
+    val deltaBaselineAdjustmentFactor: Float = 0.6f
 ) {
     companion object {
         /**

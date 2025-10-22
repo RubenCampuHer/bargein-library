@@ -8,11 +8,16 @@ import android.os.Looper
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.aima.bargein.*
+import androidx.lifecycle.lifecycleScope
+import com.aima.bargein.BargeInEngine
+import com.aima.bargein.BargeInError
+import com.aima.bargein.BargeInEvent
+import com.aima.bargein.BargeInState
+import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.io.File
 
-class TestActivity : AppCompatActivity(), BargeInListener {
+class TestActivity : AppCompatActivity() {
 
     private lateinit var engine: BargeInEngine
     private lateinit var uiManager: UIManager
@@ -40,6 +45,26 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         configManager.loadSettings()
         uiManager.setupUI()
         checkPermissions()
+    }
+
+    private fun observeEngine() {
+        lifecycleScope.launch {
+            launch {
+                engine.userInterruption.collect { event ->
+                    onUserInterruption(event)
+                }
+            }
+            launch {
+                engine.onStateChanged.collect { state ->
+                    onStateChanged(state)
+                }
+            }
+            launch {
+                engine.bargeInError.collect { error ->
+                    onError(error)
+                }
+            }
+        }
     }
 
     private fun initializeManagers() {
@@ -105,6 +130,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         try {
             wavFile = audioManager.prepareAudioFile()
             initializeEngine()
+            observeEngine()
             uiManager.showReady(configManager.currentMode, presetManager.getPresetCount())
             uiManager.enablePlayButton(true)
         } catch (e: Exception) {
@@ -115,7 +141,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
 
     private fun initializeEngine() {
         val config = configManager.getConfigForCurrentMode()
-        engine = BargeInEngine(applicationContext, config, this)
+        engine = BargeInEngine(applicationContext, config)
         engine.initialize()
         Timber.i("✅ Engine initialized with mode: ${configManager.currentMode}")
     }
@@ -268,7 +294,7 @@ class TestActivity : AppCompatActivity(), BargeInListener {
         }
     }
 
-    override fun onUserInterruption(event: BargeInEvent) {
+    private fun onUserInterruption(event: BargeInEvent) {
         runOnUiThread {
             engine.stopAudioPlayback()
             engine.stopListening()
@@ -284,11 +310,11 @@ class TestActivity : AppCompatActivity(), BargeInListener {
             .format(event.latencyMs, event.confidence * 100, event.energyDb))
     }
 
-    override fun onStateChanged(state: BargeInState) {
+    private fun onStateChanged(state: BargeInState) {
         Timber.d("📊 State: $state")
     }
 
-    override fun onError(error: BargeInError) {
+    private fun onError(error: BargeInError) {
         runOnUiThread {
             uiManager.showError("${error.code}\n${error.message}")
             isTestRunning = false

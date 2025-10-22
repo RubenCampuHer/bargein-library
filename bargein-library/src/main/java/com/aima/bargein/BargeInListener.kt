@@ -1,14 +1,5 @@
 package com.aima.bargein
 
-interface BargeInListener {
-
-    fun onUserInterruption(event: BargeInEvent)
-
-    fun onStateChanged(state: BargeInState) {}
-
-    fun onError(error: BargeInError) {}
-}
-
 enum class BargeInState {
     IDLE,
     LISTENING,

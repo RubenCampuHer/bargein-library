@@ -62,7 +62,16 @@ data class BargeInConfig(
         /**
          * Configuración por defecto
          */
-        val DEFAULT = BargeInConfig()
+        val DEFAULT = BargeInConfig(
+            sampleRate = 44100,
+            vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
+            minVoiceDurationMs = 43,
+            voiceConfidenceThreshold = 0.62f,
+            deltaVoiceThresholdDb = 14.2f,
+            minAbsoluteVoiceEnergyDb = -22f,
+            maxZcrForVoice = 0.14f,
+            deltaBaselineAdjustmentFactor = 0.87f
+        )
 
         /**
          * Configuración de baja latencia (más sensible)

@@ -18,6 +18,9 @@ import com.aima.bargein.vad.VoiceActivityDetectorFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.io.InputStream
@@ -26,8 +29,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 class BargeInEngine(
     private val context: Context,
-    private val config: BargeInConfig = BargeInConfig.DEFAULT,
-    private val listener: BargeInListener
+    private val config: BargeInConfig = BargeInConfig.DEFAULT
 ) {
     private lateinit var audioCapture: AudioCapture
     private lateinit var audioPlayback: AudioPlayback
@@ -50,6 +52,14 @@ class BargeInEngine(
 
     // ✅ Contador de frames
     private var frameCounter = 0L
+    private val _userInterruption = MutableSharedFlow<BargeInEvent>()
+    val userInterruption = _userInterruption.asSharedFlow()
+
+    private val _onStateChanged = MutableSharedFlow<BargeInState>()
+    val onStateChanged = _onStateChanged.asSharedFlow()
+
+    private val _bargeInError = MutableSharedFlow<BargeInError>()
+    val bargeInError = _bargeInError.asSharedFlow()
 
     init {
         Timber.i("🚀 BargeInEngine created with config: $config")
@@ -434,7 +444,9 @@ class BargeInEngine(
         )
 
         try {
-            listener.onUserInterruption(event)
+            engineScope.launch {
+                _userInterruption.emit(event)
+            }
             Timber.i("✅ Listener notified of barge-in")
         } catch (e: Exception) {
             Timber.e(e, "❌ Error notifying listener")
@@ -451,13 +463,17 @@ class BargeInEngine(
         val oldState = state.getAndSet(newState)
         if (oldState != newState) {
             Timber.d("📊 State: $oldState → $newState")
-            listener.onStateChanged(newState)
+            engineScope.launch {
+                _onStateChanged.emit(newState)
+            }
         }
     }
 
     private fun notifyError(error: BargeInError) {
         updateState(BargeInState.ERROR)
-        listener.onError(error)
+        engineScope.launch {
+            _bargeInError.emit(error)
+        }
     }
 
     private fun cleanup() {

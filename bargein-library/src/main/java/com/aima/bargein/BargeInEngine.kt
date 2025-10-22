@@ -46,8 +46,10 @@ class BargeInEngine(
     private val minVoiceFrames = (config.minVoiceDurationMs / 11.6).toLong().coerceAtLeast(1)
 
     private val engineScope = CoroutineScope(AudioThreadConfig.audioDispatcher + SupervisorJob())
-
     private val handler = Handler(Looper.getMainLooper())
+
+    // ✅ Contador de frames
+    private var frameCounter = 0L
 
     init {
         Timber.i("🚀 BargeInEngine created with config: $config")
@@ -67,11 +69,9 @@ class BargeInEngine(
         }
 
         try {
-            // 1. Inicializar audio @ 44.1kHz
             initializeAudioComponents()
             Timber.d("✅ Audio components initialized @ 44.1kHz")
 
-            // 2. Inicializar AEC (NO CRÍTICO)
             try {
                 aec = AcousticEchoCancelerFactory.create(
                     audioSessionId = 0,
@@ -100,14 +100,12 @@ class BargeInEngine(
                 aec?.initialize()
             }
 
-            // 3. Inicializar VAD (CRÍTICO) ✅ CAMBIO: Pasar config
             vad = VoiceActivityDetectorFactory.create(
                 sampleRate = config.sampleRate,
                 mode = config.vadMode,
                 preference = config.vadPreference
             )
 
-            // ✅ CAMBIO: Si es EnergyVAD, usar initializeWithConfig
             val initSuccess = if (vad is EnergyVoiceActivityDetector) {
                 (vad as EnergyVoiceActivityDetector).initializeWithConfig(
                     config.sampleRate,
@@ -162,6 +160,7 @@ class BargeInEngine(
             consecutiveVoiceFrames = 0
             voiceDetectionStartTime = 0
             bargeInTriggered.set(false)
+            frameCounter = 0 // ✅ Reset contador
 
             updateState(BargeInState.LISTENING)
             Timber.i("🎤 Listening started @ 44.1kHz")
@@ -321,7 +320,53 @@ class BargeInEngine(
 
                 val vadResult = vad?.processFrame(audioData, audioData.size) ?: return@launch
 
+                // ✅ LOGGING DETALLADO - Solo cada 20 frames para no saturar
+                frameCounter++
+                if (frameCounter % 20 == 0L) {
+                    Timber.d("═══════════════════════════════════════")
+                    Timber.d("🎙️ Frame #$frameCounter @ ${timestamp}ms")
+                    Timber.d("   hasVoice: ${vadResult.hasVoice}")
+                    Timber.d("   confidence: %.3f (need: %.3f)".format(vadResult.confidence, config.voiceConfidenceThreshold))
+                    Timber.d("   energyDb: %.1f (need: >= %.1f)".format(vadResult.energyDb, config.minAbsoluteVoiceEnergyDb))
+                    Timber.d("   deltaDb: %.1f (need: >= %.1f)".format(vadResult.deltaDb, config.deltaVoiceThresholdDb))
+                    Timber.d("   zcr: %.3f (max: %.3f)".format(vadResult.zcr, config.maxZcrForVoice))
+                    Timber.d("   baselineDb: %.1f".format(vadResult.baselineDb))
+                    Timber.d("   consecutiveVoiceFrames: $consecutiveVoiceFrames / $minVoiceFrames")
+                    Timber.d("   isPlaying: ${isPlaying.get()}")
+
+                    // Diagnóstico de por qué no se detecta
+                    if (!vadResult.hasVoice) {
+                        Timber.w("   ❌ NO VOICE - Failing criteria:")
+                        val failures = mutableListOf<String>()
+
+                        if (vadResult.confidence < config.voiceConfidenceThreshold) {
+                            failures.add("Confidence: %.3f < %.3f".format(vadResult.confidence, config.voiceConfidenceThreshold))
+                        }
+                        if (vadResult.energyDb < config.minAbsoluteVoiceEnergyDb) {
+                            failures.add("Energy: %.1fdB < %.1fdB".format(vadResult.energyDb, config.minAbsoluteVoiceEnergyDb))
+                        }
+                        if (vadResult.deltaDb < config.deltaVoiceThresholdDb) {
+                            failures.add("Delta: %.1fdB < %.1fdB".format(vadResult.deltaDb, config.deltaVoiceThresholdDb))
+                        }
+                        if (vadResult.zcr > config.maxZcrForVoice) {
+                            failures.add("ZCR: %.3f > %.3f".format(vadResult.zcr, config.maxZcrForVoice))
+                        }
+
+                        failures.forEach { Timber.w("      - $it") }
+                    } else {
+                        Timber.i("   ✅ VOICE DETECTED! All criteria passed")
+                    }
+                    Timber.d("═══════════════════════════════════════")
+                }
+
+                // Log SIEMPRE cuando detecta voz (sin importar el contador)
                 if (vadResult.hasVoice && vadResult.confidence >= config.voiceConfidenceThreshold) {
+                    Timber.i("🎉 VOICE FRAME DETECTED!")
+                    Timber.i("   Confidence: %.3f".format(vadResult.confidence))
+                    Timber.i("   Energy: %.1fdB".format(vadResult.energyDb))
+                    Timber.i("   Delta: %.1fdB".format(vadResult.deltaDb))
+                    Timber.i("   Consecutive: $consecutiveVoiceFrames / $minVoiceFrames needed")
+
                     handleVoiceDetected(vadResult, timestamp)
                 } else {
                     consecutiveVoiceFrames = 0

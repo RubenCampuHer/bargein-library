@@ -1,6 +1,5 @@
 package com.aima.bargein.audio
 
-import timber.log.Timber
 import kotlin.math.*
 
 object AudioFilter {

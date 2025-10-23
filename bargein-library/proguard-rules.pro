@@ -7,6 +7,3 @@
 -keepclasseswithmembernames class * {
     native <methods>;
 }
-
-# Timber
--dontwarn timber.log.**

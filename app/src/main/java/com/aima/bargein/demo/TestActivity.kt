@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -14,7 +15,6 @@ import com.aima.bargein.BargeInError
 import com.aima.bargein.BargeInEvent
 import com.aima.bargein.BargeInState
 import kotlinx.coroutines.launch
-import timber.log.Timber
 import java.io.File
 
 class TestActivity : AppCompatActivity() {
@@ -32,14 +32,14 @@ class TestActivity : AppCompatActivity() {
     private var isTestRunning = false
 
     companion object {
+        private const val TAG = "TestActivity"
         private const val PERMISSION_REQUEST_CODE = 100
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        Timber.plant(Timber.DebugTree())
-        Timber.i("🚀 TestActivity started @ 44.1kHz")
+        Log.i(TAG, "🚀 TestActivity started @ 44.1kHz")
 
         initializeManagers()
         configManager.loadSettings()
@@ -91,7 +91,7 @@ class TestActivity : AppCompatActivity() {
                 configManager.currentMode = SensitivityMode.valueOf(it)
                 uiManager.updateModeButtons()
             } catch (e: Exception) {
-                Timber.e(e, "Error restoring mode")
+                Log.e(TAG, "Error restoring mode", e)
             }
         }
     }
@@ -134,7 +134,7 @@ class TestActivity : AppCompatActivity() {
             uiManager.showReady(configManager.currentMode, presetManager.getPresetCount())
             uiManager.enablePlayButton(true)
         } catch (e: Exception) {
-            Timber.e(e, "Error in initialization")
+            Log.e(TAG, "Error in initialization", e)
             uiManager.showError("Error al inicializar: ${e.message}")
         }
     }
@@ -143,12 +143,12 @@ class TestActivity : AppCompatActivity() {
         val config = configManager.getConfigForCurrentMode()
         engine = BargeInEngine(applicationContext, config)
         engine.initialize()
-        Timber.i("✅ Engine initialized with mode: ${configManager.currentMode}")
+        Log.i(TAG, "✅ Engine initialized with mode: ${configManager.currentMode}")
     }
 
     fun changeSensitivityMode(newMode: SensitivityMode) {
         if (!::engine.isInitialized) {
-            Timber.w("Engine not initialized yet")
+            Log.w(TAG, "Engine not initialized yet")
             return
         }
 
@@ -157,33 +157,33 @@ class TestActivity : AppCompatActivity() {
             return
         }
 
-        Timber.i("🔄 Changing mode from ${configManager.currentMode} to $newMode")
+        Log.i(TAG, "🔄 Changing mode from ${configManager.currentMode} to $newMode")
 
         configManager.currentMode = newMode
         configManager.saveSettings()
 
         try {
             engine.release()
-            Timber.i("   Engine released")
+            Log.i(TAG, "   Engine released")
 
             Thread.sleep(100)
 
             initializeEngine()
-            Timber.i("   Engine reinitialized")
+            Log.i(TAG, "   Engine reinitialized")
 
             uiManager.updateModeButtons()
             uiManager.showModeChanged(newMode, configManager.getModeDescription())
 
-            Timber.i("✅ Mode changed successfully to: $newMode")
+            Log.i(TAG, "✅ Mode changed successfully to: $newMode")
         } catch (e: Exception) {
-            Timber.e(e, "Error changing mode")
+            Log.e(TAG, "Error changing mode", e)
             uiManager.showError("Error cambiando modo: ${e.message}")
         }
     }
 
     fun applyCustomSettings() {
         if (!::engine.isInitialized) {
-            Timber.w("Engine not initialized yet")
+            Log.w(TAG, "Engine not initialized yet")
             return
         }
 
@@ -193,15 +193,15 @@ class TestActivity : AppCompatActivity() {
         }
 
         if (configManager.currentMode != SensitivityMode.CUSTOM) {
-            Timber.w("Not in CUSTOM mode, skipping apply")
+            Log.w(TAG, "Not in CUSTOM mode, skipping apply")
             return
         }
 
         try {
-            Timber.i("🔧 Applying custom settings changes...")
-            Timber.i("   Delta: ${configManager.customDeltaVoiceThresholdDb}dB")
-            Timber.i("   Energy: ${configManager.customMinAbsoluteVoiceEnergyDb}dB")
-            Timber.i("   Factor: ${configManager.customDeltaBaselineAdjustmentFactor}")
+            Log.i(TAG, "🔧 Applying custom settings changes...")
+            Log.i(TAG, "   Delta: ${configManager.customDeltaVoiceThresholdDb}dB")
+            Log.i(TAG, "   Energy: ${configManager.customMinAbsoluteVoiceEnergyDb}dB")
+            Log.i(TAG, "   Factor: ${configManager.customDeltaBaselineAdjustmentFactor}")
 
             configManager.saveSettings()
 
@@ -211,9 +211,9 @@ class TestActivity : AppCompatActivity() {
 
             uiManager.showModeChanged(SensitivityMode.CUSTOM, configManager.getModeDescription())
 
-            Timber.i("✅ Custom settings applied successfully")
+            Log.i(TAG, "✅ Custom settings applied successfully")
         } catch (e: Exception) {
-            Timber.e(e, "Error applying custom settings")
+            Log.e(TAG, "Error applying custom settings", e)
             uiManager.showError("Error aplicando configuración: ${e.message}")
         }
     }
@@ -236,12 +236,12 @@ class TestActivity : AppCompatActivity() {
                 wavFile?.inputStream()?.let { engine.playAudio(it) }
             }, 100)
 
-            Timber.i("▶️ Test started with mode: ${configManager.currentMode}")
+            Log.i(TAG, "▶️ Test started with mode: ${configManager.currentMode}")
         } catch (e: Exception) {
             isTestRunning = false
             uiManager.showError("Error iniciando test: ${e.message}")
             uiManager.enablePlayButton(true)
-            Timber.e(e, "Failed to start test")
+            Log.e(TAG, "Failed to start test", e)
         }
     }
 
@@ -258,10 +258,10 @@ class TestActivity : AppCompatActivity() {
             uiManager.enablePlayButton(true)
             uiManager.enableStopButton(false)
 
-            Timber.i("⏹️ Test stopped")
+            Log.i(TAG, "⏹️ Test stopped")
         } catch (e: Exception) {
             uiManager.showError("Error deteniendo: ${e.message}")
-            Timber.e(e, "Failed to stop test")
+            Log.e(TAG, "Failed to stop test", e)
         }
     }
 
@@ -280,7 +280,7 @@ class TestActivity : AppCompatActivity() {
     // ✅ NUEVO: Callback cuando el audio termina normalmente
     fun onPlaybackComplete() {
         runOnUiThread {
-            Timber.i("🎵 Playback completed normally")
+            Log.i(TAG, "🎵 Playback completed normally")
 
             // Detener todo
             engine.stopListening()
@@ -306,12 +306,12 @@ class TestActivity : AppCompatActivity() {
             uiManager.enableStopButton(false)
         }
 
-        Timber.i("🎉 BARGE-IN! Latency: %.1fms, Confidence: %.0f%%, Energy: %.1fdB"
+        Log.i(TAG, "🎉 BARGE-IN! Latency: %.1fms, Confidence: %.0f%%, Energy: %.1fdB"
             .format(event.latencyMs, event.confidence * 100, event.energyDb))
     }
 
     private fun onStateChanged(state: BargeInState) {
-        Timber.d("📊 State: $state")
+        Log.d(TAG, "📊 State: $state")
     }
 
     private fun onError(error: BargeInError) {
@@ -322,7 +322,7 @@ class TestActivity : AppCompatActivity() {
             uiManager.enableStopButton(false)
         }
 
-        Timber.e("❌ Error: ${error.code} - ${error.message}")
+        Log.e(TAG, "❌ Error: ${error.code} - ${error.message}")
     }
 
     override fun onDestroy() {
@@ -331,6 +331,6 @@ class TestActivity : AppCompatActivity() {
         if (::engine.isInitialized) {
             engine.release()
         }
-        Timber.i("🔧 TestActivity destroyed")
+        Log.i(TAG, "🔧 TestActivity destroyed")
     }
 }

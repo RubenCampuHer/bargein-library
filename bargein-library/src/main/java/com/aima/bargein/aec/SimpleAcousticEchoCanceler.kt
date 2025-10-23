@@ -1,6 +1,6 @@
 package com.aima.bargein.aec
 
-import timber.log.Timber
+import android.util.Log
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -11,6 +11,10 @@ import kotlin.math.min
  * para eliminar el eco, pero preserva las diferencias (voz del usuario).
  */
 class SimpleAcousticEchoCanceler {
+
+    companion object {
+        private const val TAG = "BargeInEngine_SimpleAcousticEchoCanceler"
+    }
 
     // Buffer circular para far-end (audio del altavoz)
     private val farEndBuffer = mutableListOf<Short>()
@@ -104,7 +108,7 @@ class SimpleAcousticEchoCanceler {
 
             if (framesProcessed % 100 == 0L) {
                 val avgReduction = totalEchoReduction / framesProcessed
-                Timber.v("🔇 AEC: frames=$framesProcessed, gain=${String.format("%.2f", echoGain)}, " +
+                Log.d(TAG, "🔇 AEC: frames=$framesProcessed, gain=${String.format("%.2f", echoGain)}, " +
                         "delay=$estimatedDelay, avgReduction=${String.format("%.1f", avgReduction)}dB")
             }
 
@@ -165,7 +169,7 @@ class SimpleAcousticEchoCanceler {
             // Solo actualizar si la correlación es significativa
             if (abs(maxCorrelation) > 0.3) {
                 estimatedDelay = bestDelay
-                Timber.d("🎯 AEC delay estimated: ${estimatedDelay} samples " +
+                Log.d(TAG, "🎯 AEC delay estimated: ${estimatedDelay} samples " +
                         "(${String.format("%.1f", estimatedDelay * 1000f / 44100f)}ms), " +
                         "correlation=${String.format("%.2f", maxCorrelation)}")
             }
@@ -179,9 +183,9 @@ class SimpleAcousticEchoCanceler {
         isActive = active
 
         if (active) {
-            Timber.i("🔇 Software AEC activated")
-            Timber.i("   Initial gain: ${echoGain}")
-            Timber.i("   Max delay: ${MAX_DELAY} samples (~${MAX_DELAY * 1000f / 44100f}ms)")
+            Log.i(TAG, "🔇 Software AEC activated")
+            Log.i(TAG, "   Initial gain: ${echoGain}")
+            Log.i(TAG, "   Max delay: ${MAX_DELAY} samples (~${MAX_DELAY * 1000f / 44100f}ms)")
         } else {
             synchronized(farEndBuffer) {
                 farEndBuffer.clear()
@@ -189,11 +193,11 @@ class SimpleAcousticEchoCanceler {
 
             if (framesProcessed > 0) {
                 val avgReduction = totalEchoReduction / framesProcessed
-                Timber.i("🔇 Software AEC deactivated")
-                Timber.i("   Frames processed: $framesProcessed")
-                Timber.i("   Average reduction: ${String.format("%.1f", avgReduction)}dB")
-                Timber.i("   Final gain: ${String.format("%.2f", echoGain)}")
-                Timber.i("   Final delay: $estimatedDelay samples")
+                Log.i(TAG, "🔇 Software AEC deactivated")
+                Log.i(TAG, "   Frames processed: $framesProcessed")
+                Log.i(TAG, "   Average reduction: ${String.format("%.1f", avgReduction)}dB")
+                Log.i(TAG, "   Final gain: ${String.format("%.2f", echoGain)}")
+                Log.i(TAG, "   Final delay: $estimatedDelay samples")
             }
 
             framesProcessed = 0L
@@ -207,7 +211,7 @@ class SimpleAcousticEchoCanceler {
     fun reset() {
         echoGain = 0.5f
         estimatedDelay = 0
-        Timber.d("🔄 AEC reset to defaults")
+        Log.d(TAG, "🔄 AEC reset to defaults")
     }
 
     /**

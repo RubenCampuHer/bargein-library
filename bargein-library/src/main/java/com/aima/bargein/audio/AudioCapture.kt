@@ -3,15 +3,19 @@ package com.aima.bargein.audio
 import android.Manifest
 import android.media.*
 import android.media.audiofx.AcousticEchoCanceler
+import android.util.Log
 import androidx.annotation.RequiresPermission
 import kotlinx.coroutines.*
-import timber.log.Timber
 import kotlin.math.absoluteValue
 
 class AudioCapture(
     private val sampleRate: Int = 44100, // ✅ 44.1kHz para análisis espectral extendido
     private val onAudioData: (ShortArray, Long) -> Unit
 ) {
+    companion object {
+        private const val TAG = "BargeInEngine_AudioCapture"
+    }
+
     private var audioRecord: AudioRecord? = null
     private var aec: AcousticEchoCanceler? = null
     private var captureJob: Job? = null
@@ -35,7 +39,7 @@ class AudioCapture(
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun startCapture() {
         if (isCapturing) {
-            Timber.w("⚠️ Already capturing")
+            Log.w(TAG, "⚠️ Already capturing")
             return
         }
 
@@ -60,29 +64,29 @@ class AudioCapture(
                     aec = AcousticEchoCanceler.create(sessionId)
                     // ⚠️ CRÍTICO: Desactivar AEC explícito para evitar cancelación de voz
                     aec?.enabled = false
-                    Timber.w("⚠️ AEC explícito disponible pero DESACTIVADO")
-                    Timber.w("   Motivo: Cancela voz real del usuario")
-                    Timber.i("   Usando solo VOICE_COMMUNICATION (AEC hardware)")
+                    Log.w(TAG, "⚠️ AEC explícito disponible pero DESACTIVADO")
+                    Log.w(TAG, "   Motivo: Cancela voz real del usuario")
+                    Log.i(TAG, "   Usando solo VOICE_COMMUNICATION (AEC hardware)")
                 } else {
-                    Timber.w("⚠️ AEC no disponible - usando solo VOICE_COMMUNICATION")
+                    Log.w(TAG, "⚠️ AEC no disponible - usando solo VOICE_COMMUNICATION")
                 }
             } catch (e: Exception) {
-                Timber.w(e, "⚠️ No se pudo configurar AEC")
+                Log.w(TAG, "⚠️ No se pudo configurar AEC", e)
             }
 
             audioRecord?.startRecording()
             isCapturing = true
 
-            Timber.i("🎤 Audio capture started")
-            Timber.i("   Sample rate: ${sampleRate}Hz")
-            Timber.i("   Frame size: $frameSize samples (~11.6ms)")
-            Timber.i("   Buffer size: $bufferSize bytes")
-            Timber.i("   AEC: ${if (aec?.enabled == true) "✅ Explícito" else "⚠️ Solo hardware"}")
+            Log.i(TAG, "🎤 Audio capture started")
+            Log.i(TAG, "   Sample rate: ${sampleRate}Hz")
+            Log.i(TAG, "   Frame size: $frameSize samples (~11.6ms)")
+            Log.i(TAG, "   Buffer size: $bufferSize bytes")
+            Log.i(TAG, "   AEC: ${if (aec?.enabled == true) "✅ Explícito" else "⚠️ Solo hardware"}")
 
             captureJob = scope.launch { captureLoop() }
 
         } catch (e: Exception) {
-            Timber.e(e, "❌ Failed to start audio capture")
+            Log.e(TAG, "❌ Failed to start audio capture")
             cleanup()
             throw e
         }
@@ -105,34 +109,34 @@ class AudioCapture(
                     // ✅ Log solo cada 500ms para no saturar Logcat
                     val currentTime = System.currentTimeMillis()
                     if (currentTime - lastLogTime >= 500) {
-                        Timber.v("📊 Captured $frameCount frames (${frameCount * 11.6f / 1000f}s)")
+                        Log.d(TAG, "📊 Captured $frameCount frames (${frameCount * 11.6f / 1000f}s)")
                         lastLogTime = currentTime
                     }
                 } else if (read < 0) {
-                    Timber.w("⚠️ AudioRecord read error: $read")
+                    Log.w(TAG, "⚠️ AudioRecord read error: $read")
                 }
 
             } catch (e: Exception) {
                 if (isCapturing) {
-                    Timber.e(e, "❌ Error in capture loop")
+                    Log.e(TAG, "❌ Error in capture loop")
                 }
             }
         }
 
-        Timber.d("🛑 Capture loop ended (frames=$frameCount)")
+        Log.d(TAG, "🛑 Capture loop ended (frames=$frameCount)")
     }
 
     fun stopCapture() {
         if (!isCapturing) {
-            Timber.d("ℹ️ Not capturing, nothing to stop")
+            Log.d(TAG, "ℹ️ Not capturing, nothing to stop")
             return
         }
 
-        Timber.i("🛑 Stopping audio capture...")
+        Log.i(TAG, "🛑 Stopping audio capture...")
         isCapturing = false
         captureJob?.cancel()
         cleanup()
-        Timber.i("✅ Audio capture stopped")
+        Log.i(TAG, "✅ Audio capture stopped")
     }
 
     private fun cleanup() {
@@ -151,7 +155,7 @@ class AudioCapture(
                 release()
             }
         } catch (e: Exception) {
-            Timber.e(e, "❌ Cleanup error")
+            Log.e(TAG, "❌ Cleanup error")
         } finally {
             audioRecord = null
         }
@@ -163,9 +167,9 @@ class AudioCapture(
 
         if (totalFrames > 0) {
             val suppressionRate = (echoSuppressedFrames * 100f / totalFrames)
-            Timber.i("📊 Echo suppression stats: ${echoSuppressedFrames}/${totalFrames} frames (${String.format("%.1f%%", suppressionRate)})")
+            Log.i(TAG, "📊 Echo suppression stats: ${echoSuppressedFrames}/${totalFrames} frames (${String.format("%.1f%%", suppressionRate)})")
         }
 
-        Timber.d("🔧 AudioCapture released")
+        Log.d(TAG, "🔧 AudioCapture released")
     }
 }

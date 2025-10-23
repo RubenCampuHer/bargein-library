@@ -2,14 +2,18 @@ package com.aima.bargein.demo
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import com.aima.bargein.BargeInConfig
 import com.aima.bargein.vad.IVoiceActivityDetector
-import timber.log.Timber
 
 class ConfigManager(
     private val context: Context,
     private val presetManager: PresetManager
 ) {
+    companion object {
+        private const val TAG = "ConfigManager"
+    }
+
     private val prefs: SharedPreferences =
         context.getSharedPreferences("BargeInCustomPrefs", Context.MODE_PRIVATE)
 
@@ -41,7 +45,7 @@ class ConfigManager(
             SensitivityMode.SENSITIVE
         }
 
-        Timber.i("📥 Settings loaded: Mode=$currentMode")
+        Log.i(TAG, "📥 Settings loaded: Mode=$currentMode")
         logCurrentCustomSettings()
     }
 
@@ -59,20 +63,20 @@ class ConfigManager(
             apply()
         }
 
-        Timber.i("💾 Settings saved: Mode=$currentMode")
+        Log.i(TAG, "💾 Settings saved: Mode=$currentMode")
         logCurrentCustomSettings()
     }
 
     private fun logCurrentCustomSettings() {
-        Timber.i("   Custom Parameters:")
-        Timber.i("   - Delta Threshold: ${customDeltaVoiceThresholdDb}dB")
-        Timber.i("   - Min Energy: ${customMinAbsoluteVoiceEnergyDb}dB")
-        Timber.i("   - Max ZCR: ${customMaxZcrForVoice}")
-        Timber.i("   - Baseline Factor: ${customDeltaBaselineAdjustmentFactor}")
-        Timber.i("   - Min Duration: ${customMinVoiceDurationMs}ms")
-        Timber.i("   - Confidence: ${customVoiceConfidenceThreshold}")
-        Timber.i("   - Calibration: ${customCalibrationDurationMs}ms")
-        Timber.i("   - Pre-Delay: ${customPreDelayMs}ms")
+        Log.i(TAG, "   Custom Parameters:")
+        Log.i(TAG, "   - Delta Threshold: ${customDeltaVoiceThresholdDb}dB")
+        Log.i(TAG, "   - Min Energy: ${customMinAbsoluteVoiceEnergyDb}dB")
+        Log.i(TAG, "   - Max ZCR: ${customMaxZcrForVoice}")
+        Log.i(TAG, "   - Baseline Factor: ${customDeltaBaselineAdjustmentFactor}")
+        Log.i(TAG, "   - Min Duration: ${customMinVoiceDurationMs}ms")
+        Log.i(TAG, "   - Confidence: ${customVoiceConfidenceThreshold}")
+        Log.i(TAG, "   - Calibration: ${customCalibrationDurationMs}ms")
+        Log.i(TAG, "   - Pre-Delay: ${customPreDelayMs}ms")
     }
 
     fun getConfigForCurrentMode(): BargeInConfig {
@@ -122,17 +126,17 @@ class ConfigManager(
             )
         }
 
-        Timber.i("🔧 Config created for mode: $currentMode")
-        Timber.i("   ============ FINAL CONFIG ============")
-        Timber.i("   Sample Rate: ${config.sampleRate}")
-        Timber.i("   VAD Mode: ${config.vadMode}")
-        Timber.i("   Delta: ${config.deltaVoiceThresholdDb}dB")
-        Timber.i("   MinEnergy: ${config.minAbsoluteVoiceEnergyDb}dB")
-        Timber.i("   MaxZCR: ${config.maxZcrForVoice}")
-        Timber.i("   Factor: ${config.deltaBaselineAdjustmentFactor}")
-        Timber.i("   MinDuration: ${config.minVoiceDurationMs}ms")
-        Timber.i("   Confidence: ${config.voiceConfidenceThreshold}")
-        Timber.i("   =====================================")
+        Log.i(TAG, "🔧 Config created for mode: $currentMode")
+        Log.i(TAG, "   ============ FINAL CONFIG ============")
+        Log.i(TAG, "   Sample Rate: ${config.sampleRate}")
+        Log.i(TAG, "   VAD Mode: ${config.vadMode}")
+        Log.i(TAG, "   Delta: ${config.deltaVoiceThresholdDb}dB")
+        Log.i(TAG, "   MinEnergy: ${config.minAbsoluteVoiceEnergyDb}dB")
+        Log.i(TAG, "   MaxZCR: ${config.maxZcrForVoice}")
+        Log.i(TAG, "   Factor: ${config.deltaBaselineAdjustmentFactor}")
+        Log.i(TAG, "   MinDuration: ${config.minVoiceDurationMs}ms")
+        Log.i(TAG, "   Confidence: ${config.voiceConfidenceThreshold}")
+        Log.i(TAG, "   =====================================")
 
         return config
     }
@@ -158,7 +162,7 @@ class ConfigManager(
         customPreDelayMs = 350L
         saveSettings()
 
-        Timber.i("🔄 Settings reset to defaults")
+        Log.i(TAG, "🔄 Settings reset to defaults")
         logCurrentCustomSettings()
     }
 
@@ -172,7 +176,7 @@ class ConfigManager(
         customCalibrationDurationMs = 300L
         customPreDelayMs = 350L
 
-        Timber.i("📋 Copied Super Sensitive to Custom")
+        Log.i(TAG, "📋 Copied Super Sensitive to Custom")
         logCurrentCustomSettings()
     }
 
@@ -186,7 +190,7 @@ class ConfigManager(
         customCalibrationDurationMs = 300L
         customPreDelayMs = 350L
 
-        Timber.i("📋 Copied Sensitive to Custom")
+        Log.i(TAG, "📋 Copied Sensitive to Custom")
         logCurrentCustomSettings()
     }
 
@@ -200,7 +204,7 @@ class ConfigManager(
         customCalibrationDurationMs = 300L
         customPreDelayMs = 350L
 
-        Timber.i("📋 Copied Normal to Custom")
+        Log.i(TAG, "📋 Copied Normal to Custom")
         logCurrentCustomSettings()
     }
 
@@ -216,7 +220,7 @@ class ConfigManager(
         saveSettings()
         presetManager.setLastUsedPreset(preset.name)
 
-        Timber.i("📂 Preset loaded: ${preset.name}")
+        Log.i(TAG, "📂 Preset loaded: ${preset.name}")
         logCurrentCustomSettings()
     }
 

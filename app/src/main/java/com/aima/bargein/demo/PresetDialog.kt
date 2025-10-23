@@ -2,9 +2,9 @@ package com.aima.bargein.demo
 
 import android.content.Context
 import android.graphics.Color
+import android.util.Log
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
-import timber.log.Timber
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -13,6 +13,10 @@ class PresetDialog(
     private val configManager: ConfigManager,
     private val presetManager: PresetManager
 ) {
+
+    companion object {
+        private const val TAG = "PresetDialog"
+    }
 
     fun showSave() {
         val input = EditText(activity).apply {
@@ -47,7 +51,7 @@ class PresetDialog(
                                 "✅ Preset '$name' guardado"
                             }
                             Toast.makeText(activity, message, Toast.LENGTH_SHORT).show()
-                            Timber.i(message)
+                            Log.i(TAG, message)
                         } else {
                             Toast.makeText(activity, "❌ Error guardando preset", Toast.LENGTH_SHORT).show()
                         }
@@ -145,7 +149,7 @@ class PresetDialog(
         }
 
         Toast.makeText(activity, "✅ Preset '${preset.name}' cargado", Toast.LENGTH_SHORT).show()
-        Timber.i("📂 Preset '${preset.name}' loaded")
+        Log.i(TAG, "📂 Preset '${preset.name}' loaded")
     }
 
     private fun showManage() {

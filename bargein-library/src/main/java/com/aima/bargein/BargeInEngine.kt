@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.annotation.RequiresPermission
 import com.aima.bargein.aec.AcousticEchoCancelerFactory
 import com.aima.bargein.aec.IAcousticEchoCanceler
@@ -19,10 +20,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
-import timber.log.Timber
 import java.io.InputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -31,6 +30,10 @@ class BargeInEngine(
     private val context: Context,
     private val config: BargeInConfig = BargeInConfig.DEFAULT
 ) {
+    companion object {
+        private const val TAG = "BargeInEngine"
+    }
+
     private lateinit var audioCapture: AudioCapture
     private lateinit var audioPlayback: AudioPlayback
     private val audioFocusManager = AudioFocusManager(context)
@@ -62,12 +65,12 @@ class BargeInEngine(
     val bargeInError = _bargeInError.asSharedFlow()
 
     init {
-        Timber.i("🚀 BargeInEngine created with config: $config")
-        Timber.i("📊 minVoiceFrames = $minVoiceFrames (${config.minVoiceDurationMs}ms @ 44.1kHz)")
+        Log.i(TAG, "🚀 BargeInEngine created with config: $config")
+        Log.i(TAG, "📊 minVoiceFrames = $minVoiceFrames (${config.minVoiceDurationMs}ms @ 44.1kHz)")
     }
 
     fun initialize() {
-        Timber.d("🔧 Initializing BargeInEngine @ 44.1kHz...")
+        Log.d(TAG, "🔧 Initializing BargeInEngine @ 44.1kHz...")
 
         if (!PermissionHelper.hasRequiredPermissions(context)) {
             val error = BargeInError(
@@ -80,7 +83,7 @@ class BargeInEngine(
 
         try {
             initializeAudioComponents()
-            Timber.d("✅ Audio components initialized @ 44.1kHz")
+            Log.d(TAG, "✅ Audio components initialized @ 44.1kHz")
 
             try {
                 aec = AcousticEchoCancelerFactory.create(
@@ -90,9 +93,9 @@ class BargeInEngine(
                 )
 
                 if (aec != null && aec!!.initialize()) {
-                    Timber.i("✅ AEC initialized: type=${aec?.getType()}")
+                    Log.i(TAG, "✅ AEC initialized: type=${aec?.getType()}")
                 } else {
-                    Timber.w("⚠️ AEC not available, using NoOp AEC")
+                    Log.w(TAG, "⚠️ AEC not available, using NoOp AEC")
                     aec = AcousticEchoCancelerFactory.create(
                         audioSessionId = 0,
                         sampleRate = config.sampleRate,
@@ -101,7 +104,7 @@ class BargeInEngine(
                     aec?.initialize()
                 }
             } catch (e: Exception) {
-                Timber.w(e, "⚠️ AEC initialization failed, using NoOp AEC")
+                Log.w(TAG, "⚠️ AEC initialization failed, using NoOp AEC", e)
                 aec = AcousticEchoCancelerFactory.create(
                     audioSessionId = 0,
                     sampleRate = config.sampleRate,
@@ -135,13 +138,13 @@ class BargeInEngine(
                 throw IllegalStateException(error.message)
             }
 
-            Timber.i("✅ VAD initialized: type=${vad?.getType()} @ ${config.sampleRate}Hz")
+            Log.i(TAG, "✅ VAD initialized: type=${vad?.getType()} @ ${config.sampleRate}Hz")
 
             updateState(BargeInState.IDLE)
-            Timber.i("✅ BargeInEngine initialized successfully @ 44.1kHz")
+            Log.i(TAG, "✅ BargeInEngine initialized successfully @ 44.1kHz")
 
         } catch (e: Exception) {
-            Timber.e(e, "❌ Error initializing BargeInEngine")
+            Log.e(TAG, "❌ Error initializing BargeInEngine", e)
             cleanup()
             throw e
         }
@@ -150,7 +153,7 @@ class BargeInEngine(
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun startListening() {
         if (state.get() == BargeInState.LISTENING) {
-            Timber.w("⚠️ Already listening")
+            Log.w(TAG, "⚠️ Already listening")
             return
         }
 
@@ -173,10 +176,10 @@ class BargeInEngine(
             frameCounter = 0 // ✅ Reset contador
 
             updateState(BargeInState.LISTENING)
-            Timber.i("🎤 Listening started @ 44.1kHz")
+            Log.i(TAG, "🎤 Listening started @ 44.1kHz")
 
         } catch (e: Exception) {
-            Timber.e(e, "❌ Error starting listening")
+            Log.e(TAG, "❌ Error starting listening")
             val error = BargeInError(
                 ErrorCode.AUDIO_CAPTURE_FAILED,
                 "Failed to start audio capture: ${e.message}",
@@ -189,11 +192,11 @@ class BargeInEngine(
 
     fun stopListening() {
         if (!isListening.get()) {
-            Timber.d("ℹ️ Not listening, nothing to stop")
+            Log.d(TAG, "ℹ️ Not listening, nothing to stop")
             return
         }
 
-        Timber.i("🛑 Stopping listening...")
+        Log.i(TAG, "🛑 Stopping listening...")
 
         audioCapture.stopCapture()
         audioFocusManager.abandonAudioFocus()
@@ -202,19 +205,19 @@ class BargeInEngine(
         (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
 
         updateState(BargeInState.STOPPED)
-        Timber.i("✅ Listening stopped")
+        Log.i(TAG, "✅ Listening stopped")
     }
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun playAudio(audioStream: InputStream) {
         if (isPlaying.get()) {
-            Timber.w("⚠️ Already playing audio, stopping previous")
+            Log.w(TAG, "⚠️ Already playing audio, stopping previous")
             stopPlayback()
         }
 
         try {
             if (!isListening.get()) {
-                Timber.i("🎤 Starting listening before playback")
+                Log.i(TAG, "🎤 Starting listening before playback")
                 startListening()
             }
 
@@ -224,20 +227,20 @@ class BargeInEngine(
 
             isPlaying.set(true)
 
-            Timber.i("🎵 Starting audio playback @ 44.1kHz")
-            Timber.i("⏳ Waiting 350ms for AudioTrack to start before calibration...")
+            Log.i(TAG, "🎵 Starting audio playback @ 44.1kHz")
+            Log.i(TAG, "⏳ Waiting 350ms for AudioTrack to start before calibration...")
 
             audioPlayback.playWav(audioStream)
 
             handler.postDelayed({
                 if (isPlaying.get()) {
                     (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(true)
-                    Timber.i("🎯 VAD notified: playback ACTIVE (calibrating NOW with real audio...)")
+                    Log.i(TAG, "🎯 VAD notified: playback ACTIVE (calibrating NOW with real audio...)")
                 }
             }, 350)
 
         } catch (e: Exception) {
-            Timber.e(e, "❌ Error playing audio")
+            Log.e(TAG, "❌ Error playing audio")
             isPlaying.set(false)
 
             val error = BargeInError(
@@ -251,11 +254,11 @@ class BargeInEngine(
 
     private fun stopPlayback(): Long {
         if (!isPlaying.get()) {
-            Timber.d("ℹ️ No active playback to stop")
+            Log.d(TAG, "ℹ️ No active playback to stop")
             return 0
         }
 
-        Timber.i("⏸️ Stopping playback...")
+        Log.i(TAG, "⏸️ Stopping playback...")
 
         handler.removeCallbacksAndMessages(null)
 
@@ -264,9 +267,9 @@ class BargeInEngine(
         isPlaying.set(false)
 
         (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
-        Timber.i("🔕 VAD notified: playback INACTIVE")
+        Log.i(TAG, "🔕 VAD notified: playback INACTIVE")
 
-        Timber.i("✅ Playback stopped")
+        Log.i(TAG, "✅ Playback stopped")
         return stopTimestamp
     }
 
@@ -275,15 +278,14 @@ class BargeInEngine(
     }
 
     fun release() {
-        Timber.d("🔧 Releasing BargeInEngine...")
-
+        Log.d(TAG, "🔧 Releasing BargeInEngine...")
         handler.removeCallbacksAndMessages(null)
         stopListening()
         cleanup()
         engineScope.cancel()
 
         updateState(BargeInState.IDLE)
-        Timber.i("✅ BargeInEngine released")
+        Log.i(TAG, "✅ BargeInEngine released")
     }
 
     fun getMetrics(): BargeInMetrics {
@@ -308,12 +310,12 @@ class BargeInEngine(
             onPlaybackComplete = {
                 isPlaying.set(false)
                 (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
-                Timber.d("✅ Playback completed normally")
+                Log.d(TAG, "✅ Playback completed normally")
             },
             onPlaybackStopped = {
                 isPlaying.set(false)
                 (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
-                Timber.d("🛑 Playback stopped by barge-in")
+                Log.d(TAG, "🛑 Playback stopped by barge-in")
             },
             onPlaybackBuffer = { farEndBuffer ->
                 (vad as? EnergyVoiceActivityDetector)?.processFarEndReference(farEndBuffer)
@@ -333,20 +335,20 @@ class BargeInEngine(
                 // ✅ LOGGING DETALLADO - Solo cada 20 frames para no saturar
                 frameCounter++
                 if (frameCounter % 20 == 0L) {
-                    Timber.d("═══════════════════════════════════════")
-                    Timber.d("🎙️ Frame #$frameCounter @ ${timestamp}ms")
-                    Timber.d("   hasVoice: ${vadResult.hasVoice}")
-                    Timber.d("   confidence: %.3f (need: %.3f)".format(vadResult.confidence, config.voiceConfidenceThreshold))
-                    Timber.d("   energyDb: %.1f (need: >= %.1f)".format(vadResult.energyDb, config.minAbsoluteVoiceEnergyDb))
-                    Timber.d("   deltaDb: %.1f (need: >= %.1f)".format(vadResult.deltaDb, config.deltaVoiceThresholdDb))
-                    Timber.d("   zcr: %.3f (max: %.3f)".format(vadResult.zcr, config.maxZcrForVoice))
-                    Timber.d("   baselineDb: %.1f".format(vadResult.baselineDb))
-                    Timber.d("   consecutiveVoiceFrames: $consecutiveVoiceFrames / $minVoiceFrames")
-                    Timber.d("   isPlaying: ${isPlaying.get()}")
+                    Log.d("", "═══════════════════════════════════════")
+                    Log.d(TAG, "🎙️ Frame #$frameCounter @ ${timestamp}ms")
+                    Log.d(TAG, "   hasVoice: ${vadResult.hasVoice}")
+                    Log.d(TAG, "   confidence: %.3f (need: %.3f)".format(vadResult.confidence, config.voiceConfidenceThreshold))
+                    Log.d(TAG, "   energyDb: %.1f (need: >= %.1f)".format(vadResult.energyDb, config.minAbsoluteVoiceEnergyDb))
+                    Log.d(TAG, "   deltaDb: %.1f (need: >= %.1f)".format(vadResult.deltaDb, config.deltaVoiceThresholdDb))
+                    Log.d(TAG, "   zcr: %.3f (max: %.3f)".format(vadResult.zcr, config.maxZcrForVoice))
+                    Log.d(TAG, "   baselineDb: %.1f".format(vadResult.baselineDb))
+                    Log.d(TAG, "   consecutiveVoiceFrames: $consecutiveVoiceFrames / $minVoiceFrames")
+                    Log.d(TAG, "   isPlaying: ${isPlaying.get()}")
 
                     // Diagnóstico de por qué no se detecta
                     if (!vadResult.hasVoice) {
-                        Timber.w("   ❌ NO VOICE - Failing criteria:")
+                        Log.w(TAG, "   ❌ NO VOICE - Failing criteria:")
                         val failures = mutableListOf<String>()
 
                         if (vadResult.confidence < config.voiceConfidenceThreshold) {
@@ -362,20 +364,20 @@ class BargeInEngine(
                             failures.add("ZCR: %.3f > %.3f".format(vadResult.zcr, config.maxZcrForVoice))
                         }
 
-                        failures.forEach { Timber.w("      - $it") }
+                        failures.forEach { Log.w(TAG, "      - $it") }
                     } else {
-                        Timber.i("   ✅ VOICE DETECTED! All criteria passed")
+                        Log.i(TAG, "   ✅ VOICE DETECTED! All criteria passed")
                     }
-                    Timber.d("═══════════════════════════════════════")
+                    Log.d(TAG, "═══════════════════════════════════════")
                 }
 
                 // Log SIEMPRE cuando detecta voz (sin importar el contador)
                 if (vadResult.hasVoice && vadResult.confidence >= config.voiceConfidenceThreshold) {
-                    Timber.i("🎉 VOICE FRAME DETECTED!")
-                    Timber.i("   Confidence: %.3f".format(vadResult.confidence))
-                    Timber.i("   Energy: %.1fdB".format(vadResult.energyDb))
-                    Timber.i("   Delta: %.1fdB".format(vadResult.deltaDb))
-                    Timber.i("   Consecutive: $consecutiveVoiceFrames / $minVoiceFrames needed")
+                    Log.i(TAG, "🎉 VOICE FRAME DETECTED!")
+                    Log.i(TAG, "   Confidence: %.3f".format(vadResult.confidence))
+                    Log.i(TAG, "   Energy: %.1fdB".format(vadResult.energyDb))
+                    Log.i(TAG, "   Delta: %.1fdB".format(vadResult.deltaDb))
+                    Log.i(TAG, "   Consecutive: $consecutiveVoiceFrames / $minVoiceFrames needed")
 
                     handleVoiceDetected(vadResult, timestamp)
                 } else {
@@ -384,7 +386,7 @@ class BargeInEngine(
                 }
 
             } catch (e: Exception) {
-                Timber.e(e, "❌ Error processing audio frame")
+                Log.e(TAG, "❌ Error processing audio frame")
             }
         }
     }
@@ -395,7 +397,7 @@ class BargeInEngine(
     ) {
         if (consecutiveVoiceFrames == 0L) {
             voiceDetectionStartTime = timestamp
-            Timber.d("🗣️ First voice frame detected at ${timestamp}ns")
+            Log.d(TAG, "🗣️ First voice frame detected at ${timestamp}ns")
         }
 
         consecutiveVoiceFrames++
@@ -419,7 +421,7 @@ class BargeInEngine(
             return
         }
 
-        Timber.i("🚨 BARGE-IN TRIGGERED! " +
+        Log.i(TAG, "🚨 BARGE-IN TRIGGERED! " +
                 "frames=$consecutiveVoiceFrames, " +
                 "minRequired=$minVoiceFrames, " +
                 "conf=${String.format("%.2f", vadResult.confidence)}, " +
@@ -432,7 +434,7 @@ class BargeInEngine(
         val latencyNs = stopTimestamp - voiceDetectionStartTime
         val latencyMs = latencyNs / 1_000_000f
 
-        Timber.i("⏱️ Latency: ${String.format("%.1f", latencyMs)}ms " +
+        Log.i(TAG, "⏱️ Latency: ${String.format("%.1f", latencyMs)}ms " +
                 "(from first voice frame to stop)")
 
         val event = BargeInEvent(
@@ -447,12 +449,12 @@ class BargeInEngine(
             engineScope.launch {
                 _userInterruption.emit(event)
             }
-            Timber.i("✅ Listener notified of barge-in")
+            Log.i(TAG, "✅ Listener notified of barge-in")
         } catch (e: Exception) {
-            Timber.e(e, "❌ Error notifying listener")
+            Log.e(TAG, "❌ Error notifying listener")
         }
 
-        Timber.i("🎉 Barge-in completed: latency=${String.format("%.1f", latencyMs)}ms, " +
+        Log.i(TAG, "🎉 Barge-in completed: latency=${String.format("%.1f", latencyMs)}ms, " +
                 "confidence=${String.format("%.0f", vadResult.confidence * 100)}%%")
 
         consecutiveVoiceFrames = 0
@@ -462,7 +464,7 @@ class BargeInEngine(
     private fun updateState(newState: BargeInState) {
         val oldState = state.getAndSet(newState)
         if (oldState != newState) {
-            Timber.d("📊 State: $oldState → $newState")
+            Log.d(TAG, "📊 State: $oldState → $newState")
             engineScope.launch {
                 _onStateChanged.emit(newState)
             }
@@ -484,7 +486,7 @@ class BargeInEngine(
             vad?.release()
             audioFocusManager.abandonAudioFocus()
         } catch (e: Exception) {
-            Timber.e(e, "❌ Error during cleanup")
+            Log.e(TAG, "❌ Error during cleanup")
         }
     }
 }

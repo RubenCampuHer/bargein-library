@@ -1,8 +1,10 @@
 package com.aima.bargein.vad
 
-import timber.log.Timber
+import android.util.Log
 
 object VoiceActivityDetectorFactory {
+
+    private const val TAG = "BargeInEngine_VoiceActivityDetectorFactory"
 
     /**
      * Crea una instancia de VAD según el tipo preferido.
@@ -42,18 +44,18 @@ object VoiceActivityDetectorFactory {
         try {
             val webrtcVad = createWebRtcVad(sampleRate, mode)
             if (webrtcVad.initialize(sampleRate, mode)) {
-                Timber.i("✅ Using WebRTC VAD")
+                Log.i(TAG, "✅ Using WebRTC VAD")
                 return webrtcVad
             } else {
-                Timber.w("⚠️ WebRTC VAD failed to initialize")
+                Log.w(TAG, "⚠️ WebRTC VAD failed to initialize")
                 webrtcVad.release()
             }
         } catch (e: Exception) {
-            Timber.w("⚠️ WebRTC VAD not available: ${e.message}")
+            Log.w(TAG, "⚠️ WebRTC VAD not available: ${e.message}")
         }
 
         // Fallback a Energy VAD (siempre disponible)
-        Timber.i("✅ Using Energy VAD (fallback)")
+        Log.i(TAG, "✅ Using Energy VAD (fallback)")
         return createEnergyVad(sampleRate, mode)
     }
 
@@ -66,10 +68,10 @@ object VoiceActivityDetectorFactory {
     ): IVoiceActivityDetector {
         return try {
             val vad = WebRtcVoiceActivityDetector()
-            Timber.d("WebRTC VAD created")
+            Log.d(TAG, "WebRTC VAD created")
             vad
         } catch (e: Exception) {
-            Timber.e(e, "Failed to create WebRTC VAD, falling back to Energy VAD")
+            Log.e(TAG, "Failed to create WebRTC VAD, falling back to Energy VAD")
             createEnergyVad(sampleRate, mode)
         }
     }
@@ -82,7 +84,7 @@ object VoiceActivityDetectorFactory {
         mode: IVoiceActivityDetector.AggressivenessMode
     ): IVoiceActivityDetector {
         val vad = EnergyVoiceActivityDetector()
-        Timber.d("Energy VAD created")
+        Log.d(TAG, "Energy VAD created")
         return vad
     }
 
@@ -90,7 +92,7 @@ object VoiceActivityDetectorFactory {
      * Crea VAD sin operación (no hace nada).
      */
     private fun createNoOpVad(): IVoiceActivityDetector {
-        Timber.d("NoOp VAD created")
+        Log.d(TAG, "NoOp VAD created")
         return NoOpVoiceActivityDetector()
     }
 
@@ -104,7 +106,7 @@ object VoiceActivityDetectorFactory {
             sampleRate: Int,
             mode: IVoiceActivityDetector.AggressivenessMode
         ): Boolean {
-            Timber.d("NoOp VAD initialized")
+            Log.d(TAG, "NoOp VAD initialized")
             return true
         }
 
@@ -122,7 +124,7 @@ object VoiceActivityDetectorFactory {
         }
 
         override fun release() {
-            Timber.d("NoOp VAD released")
+            Log.d(TAG, "NoOp VAD released")
         }
 
         override fun getType(): IVoiceActivityDetector.Type =

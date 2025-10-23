@@ -1,7 +1,7 @@
 package com.aima.bargein.demo
 
 import android.content.Context
-import timber.log.Timber
+import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -9,37 +9,15 @@ import java.util.*
 
 class TutorialManager(private val context: Context) {
 
+    companion object {
+        private const val TAG = "TutorialManager"
+    }
+
     private val logFile: File?
     private var fileOutputStream: FileOutputStream? = null
     private var currentStep = 0
     private var testNumber = 0
     private var isCapturing = false
-
-    // ✅ Timber Tree que escribe directamente al archivo
-    private val fileLoggingTree = object : Timber.Tree() {
-        override fun log(priority: Int, tag: String?, message: String, t: Throwable?) {
-            if (!isCapturing || fileOutputStream == null) return
-
-            try {
-                val priorityStr = when (priority) {
-                    android.util.Log.VERBOSE -> "V"
-                    android.util.Log.DEBUG -> "D"
-                    android.util.Log.INFO -> "I"
-                    android.util.Log.WARN -> "W"
-                    android.util.Log.ERROR -> "E"
-                    else -> "?"
-                }
-
-                val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date())
-                val logLine = "[$timestamp] $priorityStr: $message\n"
-
-                fileOutputStream?.write(logLine.toByteArray())
-                fileOutputStream?.flush()
-            } catch (e: Exception) {
-                // Silently fail to avoid infinite loop
-            }
-        }
-    }
 
     enum class TutorialStep(val title: String, val instruction: String) {
         WELCOME(
@@ -138,9 +116,6 @@ class TutorialManager(private val context: Context) {
             logsDir.mkdirs()
         }
         logFile = logsDir
-
-        // Plantar el árbol de logging
-        Timber.plant(fileLoggingTree)
     }
 
     fun getCurrentStep(): TutorialStep {
@@ -185,13 +160,13 @@ class TutorialManager(private val context: Context) {
             fileOutputStream?.write(header.toByteArray())
             fileOutputStream?.flush()
 
-            Timber.i("📝 Log capture started: $filename")
-            Timber.i("═══════════════════════════════════════")
+            Log.i(TAG, "📝 Log capture started: $filename")
+            Log.i(TAG, "═══════════════════════════════════════")
 
             return true
 
         } catch (e: Exception) {
-            Timber.e(e, "❌ Error starting log capture")
+            Log.e(TAG, "❌ Error starting log capture")
             isCapturing = false
             return false
         }
@@ -200,12 +175,12 @@ class TutorialManager(private val context: Context) {
     fun stopLogCapture(): File? {
         try {
             if (!isCapturing) {
-                Timber.w("⚠️ Log capture was not active")
+                Log.w(TAG, "⚠️ Log capture was not active")
                 return null
             }
 
-            Timber.i("═══════════════════════════════════════")
-            Timber.i("📝 Log capture stopped")
+            Log.i(TAG, "═══════════════════════════════════════")
+            Log.i(TAG, "📝 Log capture stopped")
 
             fileOutputStream?.flush()
             fileOutputStream?.close()
@@ -217,8 +192,8 @@ class TutorialManager(private val context: Context) {
             val mostRecent = files?.firstOrNull()
 
             if (mostRecent != null) {
-                Timber.i("✅ Logs saved to: ${mostRecent.name}")
-                Timber.i("   Size: ${mostRecent.length()} bytes")
+                Log.i(TAG, "✅ Logs saved to: ${mostRecent.name}")
+                Log.i(TAG, "   Size: ${mostRecent.length()} bytes")
             }
 
             fileOutputStream = null
@@ -226,7 +201,7 @@ class TutorialManager(private val context: Context) {
             return mostRecent
 
         } catch (e: Exception) {
-            Timber.e(e, "❌ Error stopping log capture")
+            Log.e(TAG, "❌ Error stopping log capture")
             isCapturing = false
             fileOutputStream = null
             return null

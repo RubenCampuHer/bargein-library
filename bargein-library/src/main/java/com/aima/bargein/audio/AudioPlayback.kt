@@ -1,8 +1,8 @@
 package com.aima.bargein.audio
 
 import android.media.*
+import android.util.Log
 import kotlinx.coroutines.*
-import timber.log.Timber
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -13,6 +13,10 @@ class AudioPlayback(
     private val onPlaybackStopped: (() -> Unit)? = null,
     private val onPlaybackBuffer: ((ShortArray) -> Unit)? = null // 🧠 Callback far-end
 ) {
+    companion object {
+        private const val TAG = "BargeInEngine_AudioPlayback"
+    }
+
     @Volatile
     private var audioTrack: AudioTrack? = null
     private var playbackJob: Job? = null
@@ -33,7 +37,7 @@ class AudioPlayback(
         val channels = buffer.short.toInt()
         val sampleRate = buffer.int
 
-        Timber.i("📄 WAV Header: sampleRate=$sampleRate, channels=$channels")
+        Log.i(TAG, "📄 WAV Header: sampleRate=$sampleRate, channels=$channels")
 
         return WavHeader(sampleRate, channels)
     }
@@ -47,8 +51,8 @@ class AudioPlayback(
 
                 // ✅ CRÍTICO: Verificar que sea 44.1kHz
                 if (header.sampleRate != 44100) {
-                    Timber.w("⚠️ WAV file is ${header.sampleRate}Hz, not 44100Hz!")
-                    Timber.w("   This may cause sync issues with VAD @ 44.1kHz")
+                    Log.w(TAG, "⚠️ WAV file is ${header.sampleRate}Hz, not 44100Hz!")
+                    Log.w(TAG, "   This may cause sync issues with VAD @ 44.1kHz")
                 }
 
                 val bufferSize = AudioTrack.getMinBufferSize(
@@ -79,7 +83,7 @@ class AudioPlayback(
 
                 audioTrack = track
                 track.play()
-                Timber.i("▶️ Playback STARTED (rate=${header.sampleRate}, ch=${header.channels})")
+                Log.i(TAG, "▶️ Playback STARTED (rate=${header.sampleRate}, ch=${header.channels})")
 
                 val buffer = ByteArray(bufferSize)
                 var bytesRead = stream.read(buffer)
@@ -104,27 +108,27 @@ class AudioPlayback(
 
                         // Log cada 100 frames (~1.16s @ 44.1kHz)
                         if (totalFramesSent % 100 == 0) {
-                            Timber.v("📡 Sent $totalFramesSent far-end buffers to VAD")
+                            Log.d(TAG, "📡 Sent $totalFramesSent far-end buffers to VAD")
                         }
                     } catch (e: Exception) {
-                        Timber.e(e, "❌ Error sending far-end buffer to VAD")
+                        Log.e(TAG, "❌ Error sending far-end buffer to VAD")
                     }
 
                     bytesRead = stream.read(buffer)
                 }
 
-                Timber.i("📡 Total far-end buffers sent: $totalFramesSent")
+                Log.i(TAG, "📡 Total far-end buffers sent: $totalFramesSent")
 
                 if (stopRequested.get()) {
-                    Timber.w("🛑 Playback interrupted")
+                    Log.w(TAG, "🛑 Playback interrupted")
                     onPlaybackStopped?.invoke()
                 } else {
-                    Timber.i("✅ Playback COMPLETED normally")
+                    Log.i(TAG, "✅ Playback COMPLETED normally")
                     onPlaybackComplete?.invoke()
                 }
 
             } catch (e: Exception) {
-                Timber.e(e, "❌ Playback error")
+                Log.e(TAG, "❌ Playback error")
             } finally {
                 cleanup()
             }
@@ -137,7 +141,7 @@ class AudioPlayback(
     fun stopImmediately(): Long {
         val timestamp = System.currentTimeMillis()
         stopRequested.set(true)
-        Timber.i("🧨 Forcing AudioTrack stop...")
+        Log.i(TAG, "🧨 Forcing AudioTrack stop...")
 
         GlobalScope.launch(Dispatchers.Default) {
             try {
@@ -147,20 +151,22 @@ class AudioPlayback(
                             track.pause()
                             track.flush()
                             track.stop()
+                        } else {
+
                         }
                     } catch (e: Exception) {
-                        Timber.w(e, "AudioTrack stop exception")
+                        Log.w(TAG, "AudioTrack stop exception", e)
                     } finally {
                         try {
                             track.release()
-                            Timber.i("✅ AudioTrack released forcibly")
+                            Log.i(TAG, "✅ AudioTrack released forcibly")
                         } catch (e: Exception) {
-                            Timber.w(e, "release() failed")
+                            Log.w(TAG, "release() failed", e)
                         }
                     }
                 }
             } catch (e: Exception) {
-                Timber.e(e, "Error during forced stop")
+                Log.e(TAG, "Error during forced stop")
             }
         }
 
@@ -168,7 +174,7 @@ class AudioPlayback(
         playbackJob = null
         audioTrack = null
 
-        Timber.i("✅ stopImmediately finished at ${timestamp}ms")
+        Log.i(TAG, "✅ stopImmediately finished at ${timestamp}ms")
         return timestamp
     }
 
@@ -179,7 +185,7 @@ class AudioPlayback(
                 release()
             }
         } catch (e: Exception) {
-            Timber.w(e, "cleanup() error")
+            Log.w(TAG, "cleanup() error", e)
         } finally {
             audioTrack = null
         }

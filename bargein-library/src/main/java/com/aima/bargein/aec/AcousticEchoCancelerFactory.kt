@@ -1,8 +1,11 @@
 package com.aima.bargein.aec
 
-import timber.log.Timber
+import android.util.Log
+
 
 object AcousticEchoCancelerFactory {
+
+    private const val TAG = "BargeInEngine_AcousticEchoCancelerFactory"
 
     /**
      * Crea una instancia de AEC según el tipo preferido.
@@ -43,10 +46,10 @@ object AcousticEchoCancelerFactory {
         if (AndroidAcousticEchoCanceler.isSupported()) {
             val androidAec = createAndroidAec(audioSessionId)
             if (androidAec != null && androidAec.initialize()) {
-                Timber.i("✅ Using Android native AEC")
+                Log.i(TAG, "✅ Using Android native AEC")
                 return androidAec
             } else {
-                Timber.w("⚠️ Android AEC available but failed to initialize")
+                Log.w(TAG, "⚠️ Android AEC available but failed to initialize")
                 androidAec?.release()
             }
         }
@@ -54,15 +57,15 @@ object AcousticEchoCancelerFactory {
         // Fallback a WebRTC (si está disponible)
         val webrtcAec = createWebRtcAec(sampleRate)
         if (webrtcAec != null && webrtcAec.initialize()) {
-            Timber.i("✅ Using WebRTC AEC (fallback)")
+            Log.i(TAG, "✅ Using WebRTC AEC (fallback)")
             return webrtcAec
         } else {
-            Timber.w("⚠️ WebRTC AEC failed to initialize")
+            Log.w(TAG, "⚠️ WebRTC AEC failed to initialize")
             webrtcAec?.release()
         }
 
         // Sin AEC disponible - usar NoOp
-        Timber.w("⚠️ No AEC implementation available, using NoOp")
+        Log.w(TAG, "⚠️ No AEC implementation available, using NoOp")
         return createNoOpAec()
     }
 
@@ -72,16 +75,16 @@ object AcousticEchoCancelerFactory {
     private fun createAndroidAec(audioSessionId: Int): AndroidAcousticEchoCanceler? {
         return try {
             if (!AndroidAcousticEchoCanceler.isSupported()) {
-                Timber.w("Android AEC not supported on this device")
+                Log.w(TAG, "Android AEC not supported on this device")
                 return null
             }
 
             val aec = AndroidAcousticEchoCanceler(audioSessionId)
-            Timber.d("Android AEC created")
+            Log.d(TAG, "Android AEC created")
             aec
 
         } catch (e: Exception) {
-            Timber.e(e, "Failed to create Android AEC")
+            Log.e(TAG, "Failed to create Android AEC")
             null
         }
     }
@@ -92,11 +95,11 @@ object AcousticEchoCancelerFactory {
     private fun createWebRtcAec(sampleRate: Int): WebRtcAcousticEchoCanceler? {
         return try {
             val aec = WebRtcAcousticEchoCanceler(sampleRate)
-            Timber.d("WebRTC AEC created")
+            Log.d(TAG, "WebRTC AEC created")
             aec
 
         } catch (e: Exception) {
-            Timber.e(e, "Failed to create WebRTC AEC")
+            Log.e(TAG, "Failed to create WebRTC AEC")
             null
         }
     }
@@ -105,7 +108,7 @@ object AcousticEchoCancelerFactory {
      * Crea AEC sin operación (no hace nada).
      */
     private fun createNoOpAec(): IAcousticEchoCanceler {
-        Timber.d("NoOp AEC created")
+        Log.d(TAG, "NoOp AEC created")
         return NoOpAcousticEchoCanceler()
     }
 
@@ -116,7 +119,7 @@ object AcousticEchoCancelerFactory {
     private class NoOpAcousticEchoCanceler : IAcousticEchoCanceler {
 
         override fun initialize(): Boolean {
-            Timber.d("NoOp AEC initialized")
+            Log.d(TAG, "NoOp AEC initialized")
             return true
         }
 
@@ -126,7 +129,7 @@ object AcousticEchoCancelerFactory {
         }
 
         override fun release() {
-            Timber.d("NoOp AEC released")
+            Log.d(TAG, "NoOp AEC released")
         }
 
         override fun isEnabled(): Boolean = false

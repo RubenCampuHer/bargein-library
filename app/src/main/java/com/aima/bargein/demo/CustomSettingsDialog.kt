@@ -1,14 +1,18 @@
 package com.aima.bargein.demo
 
 import android.graphics.Color
+import android.util.Log
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
-import timber.log.Timber
 
 class CustomSettingsDialog(
     private val activity: TestActivity,
     private val configManager: ConfigManager
 ) {
+
+    companion object {
+        private const val TAG = "CustomSettingsDialog"
+    }
 
     data class ParamConfig(
         val name: String,
@@ -116,7 +120,7 @@ class CustomSettingsDialog(
                     val value = param.min + (progress / 100f) * (param.max - param.min)
                     param.setValue(value)
 
-                    Timber.i("   ${param.name}: ${String.format(param.format, value)}")
+                    Log.i(TAG, "   ${param.name}: ${String.format(param.format, value)}")
                 }
 
                 configManager.saveSettings()
@@ -205,7 +209,7 @@ class CustomSettingsDialog(
             Toast.LENGTH_SHORT
         ).show()
 
-        Timber.i("📋 Values copied from $mode and sliders updated")
+        Log.i(TAG, "📋 Values copied from $mode and sliders updated")
     }
 
     private fun createSmallButton(text: String, onClick: () -> Unit): Button {

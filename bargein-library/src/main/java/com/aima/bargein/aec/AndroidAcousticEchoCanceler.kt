@@ -1,7 +1,7 @@
 package com.aima.bargein.aec
 
 import android.media.audiofx.AcousticEchoCanceler
-import timber.log.Timber
+import android.util.Log
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -16,6 +16,8 @@ class AndroidAcousticEchoCanceler(
     private val totalProcessingTimeUs = AtomicLong(0)
 
     companion object {
+        private const val TAG = "BargeInEngine_AndroidAcousticEchoCanceler"
+
         /**
          * Verifica si el AEC nativo está disponible en el dispositivo.
          */
@@ -23,7 +25,7 @@ class AndroidAcousticEchoCanceler(
             return try {
                 AcousticEchoCanceler.isAvailable()
             } catch (e: Exception) {
-                Timber.w(e, "Error checking AEC availability")
+                Log.w(TAG, "Error checking AEC availability", e)
                 false
             }
         }
@@ -32,14 +34,14 @@ class AndroidAcousticEchoCanceler(
     override fun initialize(): Boolean {
         try {
             if (!isSupported()) {
-                Timber.w("⚠️ Android AEC not supported on this device")
+                Log.w(TAG, "⚠️ Android AEC not supported on this device")
                 return false
             }
 
             aec = AcousticEchoCanceler.create(audioSessionId)
 
             if (aec == null) {
-                Timber.e("❌ Failed to create AEC instance")
+                Log.e(TAG, "❌ Failed to create AEC instance")
                 return false
             }
 
@@ -47,27 +49,27 @@ class AndroidAcousticEchoCanceler(
 
             val enabled = aec?.enabled ?: false
             if (!enabled) {
-                Timber.e("❌ AEC created but not enabled")
+                Log.e(TAG, "❌ AEC created but not enabled")
                 return false
             }
 
-            Timber.i("✅ Android AEC initialized successfully (session=$audioSessionId)")
+            Log.i(TAG, "✅ Android AEC initialized successfully (session=$audioSessionId)")
             return true
 
         } catch (e: UnsupportedOperationException) {
-            Timber.w("⚠️ AEC not supported on this device: ${e.message}")
+            Log.w(TAG, "⚠️ AEC not supported on this device: ${e.message}")
             return false
         } catch (e: IllegalStateException) {
-            Timber.e(e, "❌ AEC in illegal state")
+            Log.e(TAG, "❌ AEC in illegal state")
             return false
         } catch (e: IllegalArgumentException) {
-            Timber.e(e, "❌ Invalid audio session ID: $audioSessionId")
+            Log.e(TAG, "❌ Invalid audio session ID: $audioSessionId")
             return false
         } catch (e: RuntimeException) {
-            Timber.e(e, "❌ Runtime error initializing AEC")
+            Log.e(TAG, "❌ Runtime error initializing AEC")
             return false
         } catch (e: Exception) {
-            Timber.e(e, "❌ Unexpected error initializing AEC")
+            Log.e(TAG, "❌ Unexpected error initializing AEC")
             return false
         }
     }
@@ -86,7 +88,7 @@ class AndroidAcousticEchoCanceler(
             return length
 
         } catch (e: Exception) {
-            Timber.e(e, "Error processing frame")
+            Log.e(TAG, "Error processing frame")
             return length
         }
     }
@@ -99,10 +101,10 @@ class AndroidAcousticEchoCanceler(
             }
             aec = null
 
-            Timber.d("✅ Android AEC released")
+            Log.d(TAG, "✅ Android AEC released")
 
         } catch (e: Exception) {
-            Timber.e(e, "Error releasing AEC")
+            Log.e(TAG, "Error releasing AEC")
         }
     }
 
@@ -110,7 +112,7 @@ class AndroidAcousticEchoCanceler(
         return try {
             aec?.enabled ?: false
         } catch (e: Exception) {
-            Timber.e(e, "Error checking AEC enabled state")
+            Log.e(TAG, "Error checking AEC enabled state")
             false
         }
     }

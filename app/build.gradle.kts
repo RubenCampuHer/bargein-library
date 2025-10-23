@@ -51,7 +51,4 @@ dependencies {
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-
-    // Timber
-    implementation("com.jakewharton.timber:timber:5.0.1")
 }

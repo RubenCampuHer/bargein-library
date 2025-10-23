@@ -1,23 +1,27 @@
 package com.aima.bargein.demo
 
 import android.content.Context
-import timber.log.Timber
+import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 
 class AudioManager(private val context: Context) {
 
+    companion object {
+        private const val TAG = "AudioManager"
+    }
+
     fun prepareAudioFile(): File {
         val wavFile = File(context.cacheDir, "test_audio.wav")
 
         if (wavFile.exists()) {
-            Timber.i("🗑️ Deleting existing WAV file...")
+            Log.i(TAG, "🗑️ Deleting existing WAV file...")
             wavFile.delete()
         }
 
         var copiedFromAssets = false
         try {
-            Timber.i("📂 Attempting to copy test_audio.wav from assets...")
+            Log.i(TAG, "📂 Attempting to copy test_audio.wav from assets...")
 
             val inputStream = context.assets.open("test_audio.wav")
             val outputStream = FileOutputStream(wavFile)
@@ -36,16 +40,16 @@ class AudioManager(private val context: Context) {
             outputStream.close()
 
             copiedFromAssets = true
-            Timber.i("✅ WAV file copied successfully from assets!")
-            Timber.i("   Size: ${totalBytes / 1024}KB")
+            Log.i(TAG, "✅ WAV file copied successfully from assets!")
+            Log.i(TAG, "   Size: ${totalBytes / 1024}KB")
 
         } catch (e: java.io.FileNotFoundException) {
-            Timber.w("⚠️ test_audio.wav NOT FOUND in assets")
-            Timber.w("   Will generate synthetic audio at 44.1kHz")
+            Log.w(TAG, "⚠️ test_audio.wav NOT FOUND in assets")
+            Log.w(TAG, "   Will generate synthetic audio at 44.1kHz")
         }
 
         if (!copiedFromAssets) {
-            Timber.i("🔧 Generating synthetic WAV @ 44.1kHz...")
+            Log.i(TAG, "🔧 Generating synthetic WAV @ 44.1kHz...")
             WavGenerator.generateTestWav(wavFile, durationSeconds = 15)
         }
 

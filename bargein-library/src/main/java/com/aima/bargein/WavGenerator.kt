@@ -1,6 +1,6 @@
 package com.aima.bargein.demo
 
-import timber.log.Timber
+import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
@@ -14,6 +14,8 @@ import kotlin.math.sin
  */
 object WavGenerator {
 
+    private const val TAG = "BargeInEngine_WavGenerator"
+
     /**
      * Genera un archivo WAV con audio sintético.
      * @param outputFile Archivo de salida
@@ -26,7 +28,7 @@ object WavGenerator {
             val bitsPerSample = 16
             val numSamples = sampleRate * durationSeconds
 
-            Timber.i("Generating WAV: ${outputFile.absolutePath}, duration=${durationSeconds}s")
+            Log.i(TAG, "Generating WAV: ${outputFile.absolutePath}, duration=${durationSeconds}s")
 
             // Crear buffer de audio
             val audioData = generateAudioSamples(numSamples, sampleRate)
@@ -34,10 +36,10 @@ object WavGenerator {
             // Escribir archivo WAV
             writeWavFile(outputFile, audioData, sampleRate, numChannels, bitsPerSample)
 
-            Timber.i("✅ WAV generated: ${outputFile.length()} bytes")
+            Log.i(TAG, "✅ WAV generated: ${outputFile.length()} bytes")
 
         } catch (e: Exception) {
-            Timber.e(e, "Error generating WAV")
+            Log.e(TAG, "Error generating WAV")
             throw e
         }
     }

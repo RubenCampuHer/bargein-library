@@ -5,9 +5,13 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
-import timber.log.Timber
+import android.util.Log
 
 class AudioFocusManager(private val context: Context) {
+
+    companion object {
+        private const val TAG = "BargeInEngine_AudioFocusManager"
+    }
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -16,12 +20,12 @@ class AudioFocusManager(private val context: Context) {
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
-                Timber.d("Audio focus gained")
+                Log.d(TAG, "Audio focus gained")
                 hasFocus = true
             }
             AudioManager.AUDIOFOCUS_LOSS,
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                Timber.w("Audio focus lost: $focusChange")
+                Log.w(TAG, "Audio focus lost: $focusChange")
                 hasFocus = false
             }
         }

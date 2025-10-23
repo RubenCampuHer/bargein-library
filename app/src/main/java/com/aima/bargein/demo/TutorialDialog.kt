@@ -3,16 +3,19 @@ package com.aima.bargein.demo
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
+import android.util.Log
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.FileProvider
-import timber.log.Timber
 import java.io.File
 
 class TutorialDialog(
     private val activity: TestActivity,
     private val tutorialManager: TutorialManager
 ) {
+    companion object {
+        private const val TAG = "TutorialDialog"
+    }
 
     private var currentDialog: AlertDialog? = null
     private var logCaptureFile: File? = null
@@ -189,7 +192,7 @@ class TutorialDialog(
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             try {
                 activity.startBargeInTest()
-                Timber.i("▶️ Test started from tutorial")
+                Log.i(TAG, "▶️ Test started from tutorial")
 
                 // 4. Mostrar siguiente paso después de 2 segundos
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -198,7 +201,7 @@ class TutorialDialog(
                 }, 2000)
 
             } catch (e: Exception) {
-                Timber.e(e, "Error starting test from tutorial")
+                Log.e(TAG, "Error starting test from tutorial")
                 Toast.makeText(activity, "❌ Error iniciando test: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }, 300)
@@ -236,7 +239,7 @@ class TutorialDialog(
 
                 if (logCaptureFile != null) {
                     Toast.makeText(activity, "✅ Logs guardados: ${logCaptureFile!!.name}", Toast.LENGTH_LONG).show()
-                    Timber.i("✅ Log file saved: ${logCaptureFile!!.absolutePath}")
+                    Log.i(TAG, "✅ Log file saved: ${logCaptureFile!!.absolutePath}")
 
                     // Avanzar automáticamente
                     tutorialManager.nextStep()
@@ -316,7 +319,7 @@ class TutorialDialog(
             activity.startActivity(Intent.createChooser(shareIntent, "Compartir logs via..."))
 
         } catch (e: Exception) {
-            Timber.e(e, "Error sharing files")
+            Log.e(TAG, "Error sharing files")
             Toast.makeText(activity, "Error compartiendo archivos: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }

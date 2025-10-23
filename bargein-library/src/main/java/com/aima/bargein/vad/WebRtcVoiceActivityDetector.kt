@@ -1,6 +1,6 @@
 package com.aima.bargein.vad
 
-import timber.log.Timber
+import android.util.Log
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.log10
 import kotlin.math.sqrt
@@ -20,12 +20,14 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
     private var currentMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE
 
     companion object {
+        private const val TAG = "BargeInEngine_WebRtcVoiceActivityDetector"
+
         init {
             try {
                 System.loadLibrary("webrtc_vad")
-                Timber.d("WebRTC VAD native library loaded")
+                Log.d(TAG, "WebRTC VAD native library loaded")
             } catch (e: UnsatisfiedLinkError) {
-                Timber.e(e, "Failed to load WebRTC VAD native library")
+                Log.e(TAG, "Failed to load WebRTC VAD native library")
             }
         }
 
@@ -48,24 +50,24 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
     ): Boolean {
         try {
             if (sampleRate !in listOf(8000, 16000, 32000, 48000)) {
-                Timber.e("Invalid sample rate for WebRTC VAD: $sampleRate")
+                Log.e(TAG, "Invalid sample rate for WebRTC VAD: $sampleRate")
                 return false
             }
 
             // Por ahora, simulamos que no está disponible
-            Timber.w("WebRTC VAD native library not available (not compiled yet)")
+            Log.w(TAG, "WebRTC VAD native library not available (not compiled yet)")
             return false
 
             // Este código se activará cuando compilemos WebRTC:
             // nativeHandle = nativeCreate()
             // if (nativeHandle == 0L) {
-            //     Timber.e("Failed to create WebRTC VAD instance")
+            //     Log.e(TAG, "Failed to create WebRTC VAD instance")
             //     return false
             // }
             //
             // val success = nativeInit(nativeHandle, sampleRate, mode.value)
             // if (!success) {
-            //     Timber.e("Failed to initialize WebRTC VAD")
+            //     Log.e(TAG, "Failed to initialize WebRTC VAD")
             //     nativeDestroy(nativeHandle)
             //     nativeHandle = 0
             //     return false
@@ -75,11 +77,11 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
             // currentMode = mode
             // isActive = true
             //
-            // Timber.i("WebRTC VAD initialized: sampleRate=$sampleRate, mode=$mode")
+            // Log.i(TAG, "WebRTC VAD initialized: sampleRate=$sampleRate, mode=$mode")
             // return true
 
         } catch (e: Exception) {
-            Timber.e(e, "Error initializing WebRTC VAD")
+            Log.e(TAG, "Error initializing WebRTC VAD")
             return false
         }
     }
@@ -139,7 +141,7 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
             )
 
         } catch (e: Exception) {
-            Timber.e(e, "Error processing frame with WebRTC VAD")
+            Log.e(TAG, "Error processing frame with WebRTC VAD")
             IVoiceActivityDetector.VadResult(
                 hasVoice = false,
                 confidence = 0f,
@@ -155,9 +157,9 @@ class WebRtcVoiceActivityDetector : IVoiceActivityDetector {
                 nativeDestroy(nativeHandle)
                 nativeHandle = 0
                 isActive = false
-                Timber.d("WebRTC VAD released")
+                Log.d(TAG, "WebRTC VAD released")
             } catch (e: Exception) {
-                Timber.e(e, "Error releasing WebRTC VAD")
+                Log.e(TAG, "Error releasing WebRTC VAD")
             }
         }
     }

@@ -1,8 +1,8 @@
 package com.aima.bargein.vad
 
+import android.util.Log
 import com.aima.bargein.BargeInConfig
 import com.aima.bargein.audio.AudioFilter
-import timber.log.Timber
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.absoluteValue
 import kotlin.math.log10
@@ -60,6 +60,7 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
     private var historyFilled = false
 
     companion object {
+        private const val TAG = "BargeInEngine_EnergyVoiceActivityDetector"
         private const val HISTORY_SIZE = 100
 
         private const val VOICE_THRESHOLD_MARGIN_DB = 6f
@@ -113,11 +114,11 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
                 maxZcrForVoice = config.maxZcrForVoice
                 deltaBaselineAdjustmentFactor = config.deltaBaselineAdjustmentFactor
 
-                Timber.i("✅ Custom VAD thresholds loaded:")
-                Timber.i("   Delta threshold: ${deltaVoiceThresholdDb}dB")
-                Timber.i("   Min energy: ${minAbsoluteVoiceEnergyDb}dB")
-                Timber.i("   Max ZCR: $maxZcrForVoice")
-                Timber.i("   Baseline adjustment: $deltaBaselineAdjustmentFactor")
+                Log.i(TAG, "✅ Custom VAD thresholds loaded:")
+                Log.i(TAG, "   Delta threshold: ${deltaVoiceThresholdDb}dB")
+                Log.i(TAG, "   Min energy: ${minAbsoluteVoiceEnergyDb}dB")
+                Log.i(TAG, "   Max ZCR: $maxZcrForVoice")
+                Log.i(TAG, "   Baseline adjustment: $deltaBaselineAdjustmentFactor")
             } else {
                 // Usar valores por defecto
                 deltaVoiceThresholdDb = DEFAULT_DELTA_VOICE_THRESHOLD_DB
@@ -125,7 +126,7 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
                 maxZcrForVoice = DEFAULT_MAX_ZCR_FOR_VOICE
                 deltaBaselineAdjustmentFactor = DEFAULT_DELTA_BASELINE_ADJUSTMENT_FACTOR
 
-                Timber.i("ℹ️ Using default VAD thresholds")
+                Log.i(TAG, "ℹ️ Using default VAD thresholds")
             }
 
             energyThresholdDb = when (mode) {
@@ -136,14 +137,14 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
             }
 
             isActive = true
-            Timber.i("✅ Energy VAD initialized @ ${sampleRate}Hz")
-            Timber.i("   Threshold: ${energyThresholdDb}dB")
-            Timber.i("   Mode: $mode")
-            Timber.i("   Consecutive frames required: $MIN_CONSECUTIVE_VOICE_FRAMES")
+            Log.i(TAG, "✅ Energy VAD initialized @ ${sampleRate}Hz")
+            Log.i(TAG, "   Threshold: ${energyThresholdDb}dB")
+            Log.i(TAG, "   Mode: $mode")
+            Log.i(TAG, "   Consecutive frames required: $MIN_CONSECUTIVE_VOICE_FRAMES")
             return true
 
         } catch (e: Exception) {
-            Timber.e(e, "❌ Error initializing Energy VAD")
+            Log.e(TAG, "❌ Error initializing Energy VAD")
             return false
         }
     }
@@ -174,8 +175,8 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
                 recentEnergyWindow[i] = MIN_ENERGY_DB
             }
 
-            Timber.i("🎯 Playback started - CALIBRATING baseline (200ms)...")
-            Timber.d("   Pre-playback energy: ${String.format("%.1f", energyBeforePlayback)}dB")
+            Log.i(TAG, "🎯 Playback started - CALIBRATING baseline (200ms)...")
+            Log.d(TAG, "   Pre-playback energy: ${String.format("%.1f", energyBeforePlayback)}dB")
         } else {
             isCalibrating = false
             consecutiveVoiceFrames = 0
@@ -188,8 +189,8 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
                 hasFarEndReference = false
             }
 
-            Timber.i("🔕 Playback ended - baseline: ${String.format("%.1f", calibratedBaselineDb)}dB")
-            Timber.i("   Grace period: ${GRACE_PERIOD_MS}ms (ignore detections)")
+            Log.i(TAG, "🔕 Playback ended - baseline: ${String.format("%.1f", calibratedBaselineDb)}dB")
+            Log.i(TAG, "   Grace period: ${GRACE_PERIOD_MS}ms (ignore detections)")
         }
     }
 
@@ -224,7 +225,7 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
                 framesProcessed.incrementAndGet()
                 return IVoiceActivityDetector.VadResult(false, 0f, lastEnergyDb, timestamp)
             } else if (timeSinceEnd >= GRACE_PERIOD_MS && timeSinceEnd < GRACE_PERIOD_MS + 100) {
-                Timber.d("✅ Grace period ended - resuming normal detection")
+                Log.d(TAG, "✅ Grace period ended - resuming normal detection")
                 playbackEndTime = 0L
             }
         }
@@ -271,7 +272,7 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
                 framesProcessed.incrementAndGet()
 
                 if (calibrationFrames.size == 1) {
-                    Timber.d("🎯 Calibrating... (frame 1/${(CALIBRATION_DURATION_MS / 11.6f).toInt()})")
+                    Log.d(TAG, "🎯 Calibrating... (frame 1/${(CALIBRATION_DURATION_MS / 11.6f).toInt()})")
                 }
 
                 return IVoiceActivityDetector.VadResult(false, 0f, energyDb, timestamp)
@@ -282,10 +283,10 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
                     val p75Index = (sorted.size * 0.75).toInt().coerceIn(0, sorted.size - 1)
                     calibratedBaselineDb = sorted[p75Index]
 
-                    Timber.i("✅ Calibration complete!")
-                    Timber.i("   Frames analyzed: ${calibrationFrames.size}")
-                    Timber.i("   Baseline (P75): ${String.format("%.1f", calibratedBaselineDb)}dB")
-                    Timber.i("   Range: ${String.format("%.1f", sorted.first())} to ${String.format("%.1f", sorted.last())}dB")
+                    Log.i(TAG, "✅ Calibration complete!")
+                    Log.i(TAG, "   Frames analyzed: ${calibrationFrames.size}")
+                    Log.i(TAG, "   Baseline (P75): ${String.format("%.1f", calibratedBaselineDb)}dB")
+                    Log.i(TAG, "   Range: ${String.format("%.1f", sorted.first())} to ${String.format("%.1f", sorted.last())}dB")
                 }
             }
         }
@@ -319,7 +320,7 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
                 val adjusted = (deltaVoiceThresholdDb - baselineAdjustment).coerceIn(10f, deltaVoiceThresholdDb)
 
                 if (deltaEnergy > 8f) {
-                    Timber.v("🎚️ Delta threshold adjusted: ${String.format("%.1f", adjusted)}dB " +
+                    Log.d(TAG, "🎚️ Delta threshold adjusted: ${String.format("%.1f", adjusted)}dB " +
                             "(baseline: ${String.format("%.1f", calibratedBaselineDb)}dB, " +
                             "base threshold: ${deltaVoiceThresholdDb}dB, factor: $deltaBaselineAdjustmentFactor)")
                 }
@@ -355,7 +356,7 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
                         hasVoice = true
                         consecutiveVoiceFrames++
                         consecutiveRejectedFrames = 0
-                        Timber.i("🎯 DELTA VOICE: Δ=${String.format("%.1f", deltaEnergy)}dB " +
+                        Log.i(TAG, "🎯 DELTA VOICE: Δ=${String.format("%.1f", deltaEnergy)}dB " +
                                 "(threshold: ${String.format("%.1f", adjustedDeltaThreshold)}dB, " +
                                 "E=${String.format("%.1f", energyDb)}dB, " +
                                 "corr=${String.format("%.2f", correlation)})")
@@ -365,7 +366,7 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
                         hasVoice = true
                         consecutiveVoiceFrames++
                         consecutiveRejectedFrames = 0
-                        Timber.i("🎯 DELTA VOICE: Δ=${String.format("%.1f", deltaEnergy)}dB " +
+                        Log.i(TAG, "🎯 DELTA VOICE: Δ=${String.format("%.1f", deltaEnergy)}dB " +
                                 "(threshold: ${String.format("%.1f", adjustedDeltaThreshold)}dB, " +
                                 "E=${String.format("%.1f", energyDb)}dB)")
                     } else {
@@ -419,19 +420,19 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
         val shouldLog = (currentTime - lastLogTime) >= LOG_INTERVAL_MS
 
         if (confirmedVoice) {
-            Timber.i("✅ VOICE CONFIRMED [frame #${consecutiveVoiceFrames}]")
-            Timber.i("   Energy: ${String.format("%.1f", energyDb)}dB (threshold: ${String.format("%.1f", adaptiveThreshold)}dB)")
-            Timber.i("   Playback: $isPlaybackActive | Baseline: ${String.format("%.1f", calibratedBaselineDb)}dB")
+            Log.i(TAG, "✅ VOICE CONFIRMED [frame #${consecutiveVoiceFrames}]")
+            Log.i(TAG, "   Energy: ${String.format("%.1f", energyDb)}dB (threshold: ${String.format("%.1f", adaptiveThreshold)}dB)")
+            Log.i(TAG, "   Playback: $isPlaybackActive | Baseline: ${String.format("%.1f", calibratedBaselineDb)}dB")
             if (isPlaybackActive) {
                 val avgRecent = calculateAverageRecentEnergy()
                 val delta = energyDb - avgRecent
-                Timber.i("   Delta: ${String.format("%.1f", delta)}dB above recent average")
+                Log.i(TAG, "   Delta: ${String.format("%.1f", delta)}dB above recent average")
             }
-            Timber.i("   Analysis: ${freqAnalysis.getDebugInfo()}")
+            Log.i(TAG, "   Analysis: ${freqAnalysis.getDebugInfo()}")
             voiceFrames.incrementAndGet()
             lastLogTime = currentTime
         } else if (shouldLog && rejectionReason.isNotEmpty() && energyDb > -35f) {
-            Timber.v("❌ REJECTED: $rejectionReason")
+            Log.d(TAG, "❌ REJECTED: $rejectionReason")
             lastLogTime = currentTime
         }
 
@@ -557,12 +558,12 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
             0f
         }
 
-        Timber.i("📊 VAD Final Stats:")
-        Timber.i("   Total frames: $totalFrames")
-        Timber.i("   Voice frames: $acceptedFrames (${String.format("%.1f%%", acceptanceRate)})")
-        Timber.i("   Rejected frames: $rejected")
-        Timber.i("   Calibrated baseline: ${String.format("%.1f", calibratedBaselineDb)}dB")
-        Timber.d("🔧 Energy VAD released")
+        Log.i(TAG, "📊 VAD Final Stats:")
+        Log.i(TAG, "   Total frames: $totalFrames")
+        Log.i(TAG, "   Voice frames: $acceptedFrames (${String.format("%.1f%%", acceptanceRate)})")
+        Log.i(TAG, "   Rejected frames: $rejected")
+        Log.i(TAG, "   Calibrated baseline: ${String.format("%.1f", calibratedBaselineDb)}dB")
+        Log.d(TAG, "🔧 Energy VAD released")
     }
 
     override fun getType(): IVoiceActivityDetector.Type =

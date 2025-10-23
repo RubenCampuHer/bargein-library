@@ -2,7 +2,7 @@ package com.aima.bargein.demo
 
 import android.content.Context
 import android.content.SharedPreferences
-import timber.log.Timber
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -17,6 +17,7 @@ class PresetManager(context: Context) {
     )
 
     companion object {
+        private const val TAG = "PresetManager"
         private const val KEY_PRESETS = "saved_presets"
         private const val KEY_LAST_USED = "last_used_preset"
     }
@@ -85,16 +86,16 @@ class PresetManager(context: Context) {
             val existingIndex = presets.indexOfFirst { it.name == preset.name }
             if (existingIndex >= 0) {
                 presets[existingIndex] = preset
-                Timber.i("📝 Preset '${preset.name}' actualizado")
+                Log.i(TAG, "📝 Preset '${preset.name}' actualizado")
             } else {
                 presets.add(preset)
-                Timber.i("💾 Nuevo preset '${preset.name}' guardado")
+                Log.i(TAG, "💾 Nuevo preset '${preset.name}' guardado")
             }
 
             saveAllPresets(presets)
             true
         } catch (e: Exception) {
-            Timber.e(e, "Error guardando preset")
+            Log.e(TAG, "Error guardando preset", e)
             false
         }
     }
@@ -119,7 +120,7 @@ class PresetManager(context: Context) {
             }.sortedByDescending { it.timestamp } // Más recientes primero
 
         } catch (e: Exception) {
-            Timber.e(e, "Error cargando presets")
+            Log.e(TAG, "Error cargando presets", e)
             emptyList()
         }
     }
@@ -131,10 +132,10 @@ class PresetManager(context: Context) {
         return try {
             val presets = getAllPresets().filter { it.name != name }
             saveAllPresets(presets)
-            Timber.i("🗑️ Preset '$name' eliminado")
+            Log.i(TAG, "🗑️ Preset '$name' eliminado")
             true
         } catch (e: Exception) {
-            Timber.e(e, "Error eliminando preset")
+            Log.e(TAG, "Error eliminando preset", e)
             false
         }
     }
@@ -170,7 +171,7 @@ class PresetManager(context: Context) {
             presets.forEach { jsonArray.put(it.toJson()) }
             jsonArray.toString(2) // Pretty print
         } catch (e: Exception) {
-            Timber.e(e, "Error exportando presets")
+            Log.e(TAG, "Error exportando presets", e)
             "[]"
         }
     }
@@ -198,10 +199,10 @@ class PresetManager(context: Context) {
             }
 
             saveAllPresets(existingPresets)
-            Timber.i("📥 ${importedPresets.size} presets importados")
+            Log.i(TAG, "📥 ${importedPresets.size} presets importados")
             true
         } catch (e: Exception) {
-            Timber.e(e, "Error importando presets")
+            Log.e(TAG, "Error importando presets", e)
             false
         }
     }

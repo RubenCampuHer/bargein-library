@@ -27,7 +27,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 class BargeInEngine(
-    private val context: Context,
     private val config: BargeInConfig = BargeInConfig.DEFAULT
 ) {
     companion object {
@@ -36,7 +35,7 @@ class BargeInEngine(
 
     private lateinit var audioCapture: AudioCapture
     private lateinit var audioPlayback: AudioPlayback
-    private val audioFocusManager = AudioFocusManager(context)
+    private lateinit var audioFocusManager: AudioFocusManager
 
     private var aec: IAcousticEchoCanceler? = null
     private var vad: IVoiceActivityDetector? = null
@@ -69,7 +68,7 @@ class BargeInEngine(
         Log.i(TAG, "📊 minVoiceFrames = $minVoiceFrames (${config.minVoiceDurationMs}ms @ 44.1kHz)")
     }
 
-    fun initialize() {
+    fun initialize(context: Context) {
         Log.d(TAG, "🔧 Initializing BargeInEngine @ 44.1kHz...")
 
         if (!PermissionHelper.hasRequiredPermissions(context)) {
@@ -82,7 +81,7 @@ class BargeInEngine(
         }
 
         try {
-            initializeAudioComponents()
+            initializeAudioComponents(context)
             Log.d(TAG, "✅ Audio components initialized @ 44.1kHz")
 
             try {
@@ -297,7 +296,9 @@ class BargeInEngine(
         )
     }
 
-    private fun initializeAudioComponents() {
+    private fun initializeAudioComponents(context: Context) {
+        audioFocusManager = AudioFocusManager(context)
+
         audioCapture = AudioCapture(
             sampleRate = config.sampleRate,
             onAudioData = { audioData, timestamp ->

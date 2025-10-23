@@ -141,8 +141,8 @@ class TestActivity : AppCompatActivity() {
 
     private fun initializeEngine() {
         val config = configManager.getConfigForCurrentMode()
-        engine = BargeInEngine(applicationContext, config)
-        engine.initialize()
+        engine = BargeInEngine(config)
+        engine.initialize(applicationContext)
         Log.i(TAG, "✅ Engine initialized with mode: ${configManager.currentMode}")
     }
 

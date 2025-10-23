@@ -282,9 +282,8 @@ class BargeInEngine(
         handler.removeCallbacksAndMessages(null)
         stopListening()
         cleanup()
-        engineScope.cancel()
-
         updateState(BargeInState.IDLE)
+        engineScope.cancel()
         Log.i(TAG, "✅ BargeInEngine released")
     }
 
@@ -415,11 +414,11 @@ class BargeInEngine(
             return
         }
 
-        if (!isPlaying.get()) {
-            Timber.w("⚠️ Not playing, ignoring barge-in trigger")
-            bargeInTriggered.set(false)
-            return
-        }
+//        if (!isPlaying.get()) {
+//            Log.w(TAG, "⚠️ Not playing, ignoring barge-in trigger")
+//            bargeInTriggered.set(false)
+//            return
+//        }
 
         Log.i(TAG, "🚨 BARGE-IN TRIGGERED! " +
                 "frames=$consecutiveVoiceFrames, " +

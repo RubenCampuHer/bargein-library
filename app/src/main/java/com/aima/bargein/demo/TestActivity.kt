@@ -169,6 +169,7 @@ class TestActivity : AppCompatActivity() {
             Thread.sleep(100)
 
             initializeEngine()
+            observeEngine()
             Log.i(TAG, "   Engine reinitialized")
 
             uiManager.updateModeButtons()
@@ -208,6 +209,7 @@ class TestActivity : AppCompatActivity() {
             engine.release()
             Thread.sleep(100)
             initializeEngine()
+            observeEngine()
 
             uiManager.showModeChanged(SensitivityMode.CUSTOM, configManager.getModeDescription())
 

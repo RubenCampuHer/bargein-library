@@ -52,6 +52,20 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
     private var maxZcrForVoice: Float = 0.18f
     private var deltaBaselineAdjustmentFactor: Float = 0.6f
 
+    // ✅ NUEVO: Parámetros base (sin ajuste por volumen)
+    private var baseDeltaVoiceThresholdDb: Float = 15f
+    private var baseMinAbsoluteVoiceEnergyDb: Float = -25f
+    private var baseMaxZcrForVoice: Float = 0.18f
+    private var baseDeltaBaselineAdjustmentFactor: Float = 0.6f
+
+    // ✅ NUEVO: Volumen actual del sistema (0.0 - 1.0)
+    @Volatile
+    private var currentVolume: Float = 0.5f
+
+    // ✅ NUEVO: Estadísticas de ajuste por volumen
+    private var lastVolumeAdjustmentLog = 0L
+    private val VOLUME_LOG_INTERVAL_MS = 2000L
+
     private var energyThresholdDb = -38f
     private var noiseFloorDb = -60f
 
@@ -76,6 +90,10 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
         private const val DEFAULT_MIN_ABSOLUTE_VOICE_ENERGY_DB = -25f
         private const val DEFAULT_MAX_ZCR_FOR_VOICE = 0.18f
         private const val DEFAULT_DELTA_BASELINE_ADJUSTMENT_FACTOR = 0.6f
+
+        // ✅ NUEVO: Configuración de ajuste por volumen
+        private const val VOLUME_THRESHOLD = 0.65f  // 65% - umbral de inicio
+        private const val MAX_VOLUME_SCALE = 0.64f  // Escala máxima: +64% a 100%
     }
 
     private var lastEnergyDb = -60f
@@ -109,22 +127,35 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
         try {
             // ✅ Cargar configuración personalizada si existe
             if (config != null) {
-                deltaVoiceThresholdDb = config.deltaVoiceThresholdDb
-                minAbsoluteVoiceEnergyDb = config.minAbsoluteVoiceEnergyDb
-                maxZcrForVoice = config.maxZcrForVoice
-                deltaBaselineAdjustmentFactor = config.deltaBaselineAdjustmentFactor
+                // Guardar valores base (sin ajuste)
+                baseDeltaVoiceThresholdDb = config.deltaVoiceThresholdDb
+                baseMinAbsoluteVoiceEnergyDb = config.minAbsoluteVoiceEnergyDb
+                baseMaxZcrForVoice = config.maxZcrForVoice
+                baseDeltaBaselineAdjustmentFactor = config.deltaBaselineAdjustmentFactor
+
+                // Inicializar valores actuales con los base
+                deltaVoiceThresholdDb = baseDeltaVoiceThresholdDb
+                minAbsoluteVoiceEnergyDb = baseMinAbsoluteVoiceEnergyDb
+                maxZcrForVoice = baseMaxZcrForVoice
+                deltaBaselineAdjustmentFactor = baseDeltaBaselineAdjustmentFactor
 
                 Log.i(TAG, "✅ Custom VAD thresholds loaded:")
                 Log.i(TAG, "   Delta threshold: ${deltaVoiceThresholdDb}dB")
                 Log.i(TAG, "   Min energy: ${minAbsoluteVoiceEnergyDb}dB")
                 Log.i(TAG, "   Max ZCR: $maxZcrForVoice")
                 Log.i(TAG, "   Baseline adjustment: $deltaBaselineAdjustmentFactor")
+                Log.i(TAG, "   🎚️ Volume-based adjustment: ENABLED (threshold: 65%)")
             } else {
                 // Usar valores por defecto
-                deltaVoiceThresholdDb = DEFAULT_DELTA_VOICE_THRESHOLD_DB
-                minAbsoluteVoiceEnergyDb = DEFAULT_MIN_ABSOLUTE_VOICE_ENERGY_DB
-                maxZcrForVoice = DEFAULT_MAX_ZCR_FOR_VOICE
-                deltaBaselineAdjustmentFactor = DEFAULT_DELTA_BASELINE_ADJUSTMENT_FACTOR
+                baseDeltaVoiceThresholdDb = DEFAULT_DELTA_VOICE_THRESHOLD_DB
+                baseMinAbsoluteVoiceEnergyDb = DEFAULT_MIN_ABSOLUTE_VOICE_ENERGY_DB
+                baseMaxZcrForVoice = DEFAULT_MAX_ZCR_FOR_VOICE
+                baseDeltaBaselineAdjustmentFactor = DEFAULT_DELTA_BASELINE_ADJUSTMENT_FACTOR
+
+                deltaVoiceThresholdDb = baseDeltaVoiceThresholdDb
+                minAbsoluteVoiceEnergyDb = baseMinAbsoluteVoiceEnergyDb
+                maxZcrForVoice = baseMaxZcrForVoice
+                deltaBaselineAdjustmentFactor = baseDeltaBaselineAdjustmentFactor
 
                 Log.i(TAG, "ℹ️ Using default VAD thresholds")
             }
@@ -144,14 +175,49 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
             return true
 
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error initializing Energy VAD")
+            Log.e(TAG, "❌ Error initializing Energy VAD", e)
             return false
         }
     }
 
     /**
-     * ✅ Inicia calibración cuando comienza el playback
+     * ✅ NUEVO: Configurar parámetros de ajuste por volumen
+     * Llamado desde BargeInEngine con estrategia específica
      */
+    fun setVolumeAdjustmentParameters(
+        enabled: Boolean,
+        scaleMultiplier: Float
+    ) {
+        if (!enabled) {
+            // Restaurar valores base
+            deltaVoiceThresholdDb = baseDeltaVoiceThresholdDb
+            minAbsoluteVoiceEnergyDb = baseMinAbsoluteVoiceEnergyDb
+            maxZcrForVoice = baseMaxZcrForVoice
+            deltaBaselineAdjustmentFactor = baseDeltaBaselineAdjustmentFactor
+            return
+        }
+
+        // ✅ Aplicar escala según multiplicador
+        deltaVoiceThresholdDb = baseDeltaVoiceThresholdDb * scaleMultiplier
+
+        // MinEnergy: más negativo = más restrictivo
+        val energyScale = 1.0f + ((scaleMultiplier - 1.0f) * 0.6f)
+        minAbsoluteVoiceEnergyDb = baseMinAbsoluteVoiceEnergyDb * energyScale
+
+        // MaxZCR: más bajo = más restrictivo
+        val zcrScale = 1.0f - ((scaleMultiplier - 1.0f) * 0.4f)
+        maxZcrForVoice = (baseMaxZcrForVoice * zcrScale).coerceAtLeast(0.01f)
+
+        // BaselineFactor: hacia 1.0
+        val factorIncrease = (scaleMultiplier - 1.0f) * 0.03f
+        deltaBaselineAdjustmentFactor = (baseDeltaBaselineAdjustmentFactor + factorIncrease)
+            .coerceAtMost(1.0f)
+    }
+
+    /**
+     * ✅ NUEVO: Aplicar ajuste dinámico según volumen actual
+     */
+
     fun setPlaybackActive(active: Boolean) {
         isPlaybackActive = active
 
@@ -224,223 +290,134 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
             if (timeSinceEnd < GRACE_PERIOD_MS) {
                 framesProcessed.incrementAndGet()
                 return IVoiceActivityDetector.VadResult(false, 0f, lastEnergyDb, timestamp)
-            } else if (timeSinceEnd >= GRACE_PERIOD_MS && timeSinceEnd < GRACE_PERIOD_MS + 100) {
-                Log.d(TAG, "✅ Grace period ended - resuming normal detection")
-                playbackEndTime = 0L
             }
         }
 
         val startTime = System.nanoTime()
 
-        // ===== PASO 1: FILTRO PASO-ALTO (600Hz) =====
-        val filteredSamples = audioData.copyOf()
-        AudioFilter.applyHighPassFilter(
-            samples = filteredSamples,
-            length = length,
-            cutoffFreq = 600f,
-            sampleRate = 44100
-        )
-
-        // ===== PASO 2: ANÁLISIS DE FRECUENCIAS =====
-        val freqAnalysis = AudioFilter.analyzeFrequencyBands(
-            samples = filteredSamples,
-            length = length,
-            sampleRate = 44100
-        )
-
-        // ===== PASO 3: CALCULAR ENERGÍA RMS =====
-        val rmsEnergy = calculateRMS(filteredSamples, length)
-        val energyDb = if (rmsEnergy > 0) {
-            20 * log10(rmsEnergy).coerceAtLeast(MIN_ENERGY_DB)
+        // ✅ 1. CALCULAR ENERGÍA
+        val rms = calculateRMS(audioData, length)
+        val energyDb = if (rms > 1e-10f) {
+            (20 * log10(rms)).coerceAtLeast(MIN_ENERGY_DB)
         } else {
             MIN_ENERGY_DB
         }
 
+        lastEnergyDb = energyDb
         updateEnergyHistory(energyDb)
         noiseFloorDb = estimateNoiseFloor()
 
-        // ✅ PASO 3.5: ACTUALIZAR VENTANA DE ENERGÍA RECIENTE
-        updateRecentEnergyWindow(energyDb)
-
-        // ✅ PASO 3.6: CALIBRACIÓN DINÁMICA
+        // ✅ 2. CALIBRACIÓN INICIAL (primeros 200ms de playback)
         if (isCalibrating) {
-            val elapsedMs = System.currentTimeMillis() - calibrationStartTime
+            calibrationFrames.add(energyDb)
 
-            if (elapsedMs < CALIBRATION_DURATION_MS) {
-                calibrationFrames.add(energyDb)
-                lastEnergyDb = energyDb
-                framesProcessed.incrementAndGet()
-
-                if (calibrationFrames.size == 1) {
-                    Log.d(TAG, "🎯 Calibrating... (frame 1/${(CALIBRATION_DURATION_MS / 11.6f).toInt()})")
-                }
-
-                return IVoiceActivityDetector.VadResult(false, 0f, energyDb, timestamp)
-            } else {
+            val elapsed = System.currentTimeMillis() - calibrationStartTime
+            if (elapsed >= CALIBRATION_DURATION_MS) {
                 isCalibrating = false
+
                 if (calibrationFrames.isNotEmpty()) {
-                    val sorted = calibrationFrames.sorted()
-                    val p75Index = (sorted.size * 0.75).toInt().coerceIn(0, sorted.size - 1)
-                    calibratedBaselineDb = sorted[p75Index]
-
-                    Log.i(TAG, "✅ Calibration complete!")
-                    Log.i(TAG, "   Frames analyzed: ${calibrationFrames.size}")
-                    Log.i(TAG, "   Baseline (P75): ${String.format("%.1f", calibratedBaselineDb)}dB")
-                    Log.i(TAG, "   Range: ${String.format("%.1f", sorted.first())} to ${String.format("%.1f", sorted.last())}dB")
+                    calibratedBaselineDb = calibrationFrames.average().toFloat()
+                    Log.i(TAG, "✅ Calibration complete: baseline = ${String.format("%.1f", calibratedBaselineDb)}dB (${calibrationFrames.size} frames)")
                 }
             }
+
+            framesProcessed.incrementAndGet()
+            return IVoiceActivityDetector.VadResult(false, 0f, energyDb, timestamp)
         }
 
-        // ===== PASO 4: THRESHOLD ADAPTATIVO =====
-        var adaptiveThreshold = noiseFloorDb + VOICE_THRESHOLD_MARGIN_DB
+        // ✅ 3. ANÁLISIS DE FRECUENCIAS
+        val freqAnalysis = AudioFilter.analyzeFrequencyBands(audioData, length, 44100)
 
-        if (isPlaybackActive && calibratedBaselineDb > -60f) {
-            val playbackThreshold = calibratedBaselineDb + PLAYBACK_SUPPRESSION_DB
-            adaptiveThreshold = adaptiveThreshold.coerceAtLeast(playbackThreshold)
-        }
-
-        adaptiveThreshold = adaptiveThreshold.coerceAtLeast(energyThresholdDb)
-
-        // ===== PASO 5: DETECCIÓN CON FILTROS =====
-        var hasVoice = false
-        var rejectionReason = ""
-
-        // 5.1: Energía mínima absoluta (usando variable configurable)
-        if (energyDb <= minAbsoluteVoiceEnergyDb) {
-            rejectionReason = "Below absolute minimum (${String.format("%.1f", energyDb)}dB < ${minAbsoluteVoiceEnergyDb}dB)"
-        }
-        // 5.2: Durante playback - DETECCIÓN POR DELTA (PRINCIPAL)
-        else if (isPlaybackActive && !isCalibrating) {
-            val avgRecentEnergy = calculateAverageRecentEnergy()
-            val deltaEnergy = energyDb - avgRecentEnergy
-
-            // ✅ Delta adaptativo usando variables configurables
-            val adjustedDeltaThreshold = if (calibratedBaselineDb > -60f) {
-                val baselineAdjustment = (calibratedBaselineDb + 20f) * deltaBaselineAdjustmentFactor
-                val adjusted = (deltaVoiceThresholdDb - baselineAdjustment).coerceIn(10f, deltaVoiceThresholdDb)
-
-                if (deltaEnergy > 8f) {
-                    Log.d(TAG, "🎚️ Delta threshold adjusted: ${String.format("%.1f", adjusted)}dB " +
-                            "(baseline: ${String.format("%.1f", calibratedBaselineDb)}dB, " +
-                            "base threshold: ${deltaVoiceThresholdDb}dB, factor: $deltaBaselineAdjustmentFactor)")
-                }
-                adjusted
-            } else {
-                deltaVoiceThresholdDb
-            }
-
-            // ✅ CRITERIO PRINCIPAL: Incremento súbito de energía (usando threshold ajustado)
-            if (deltaEnergy > adjustedDeltaThreshold) {
-                // Verificar energía absoluta mínima (usando variable)
-                if (energyDb < minAbsoluteVoiceEnergyDb) {
-                    rejectionReason = "Delta spike (${String.format("%.1f", deltaEnergy)}dB) but energy too low (${String.format("%.1f", energyDb)}dB < ${minAbsoluteVoiceEnergyDb}dB)"
-                    rejectedFrames.incrementAndGet()
-                }
-                // Verificar ZCR (usando variable)
-                else if (freqAnalysis.zeroCrossingRate > maxZcrForVoice) {
-                    rejectionReason = "Delta sufficient but ZCR too high (${String.format("%.3f", freqAnalysis.zeroCrossingRate)} > $maxZcrForVoice) - likely noise"
-                    rejectedFrames.incrementAndGet()
-                }
-                // Verificar que no sea eco obvio
-                else if (freqAnalysis.isLikelySpeakerEcho()) {
-                    rejectionReason = "Delta sufficient (${String.format("%.1f", deltaEnergy)}dB) but echo-like [${freqAnalysis.getDebugInfo()}]"
-                    rejectedFrames.incrementAndGet()
-                }
-                // Verificar correlación con far-end
-                else if (hasFarEndReference) {
-                    val correlation = calculateCorrelationWithFarEnd(filteredSamples, length)
-                    if (correlation > MAX_CORRELATION_THRESHOLD) {
-                        rejectionReason = "Delta sufficient but high correlation (${String.format("%.2f", correlation)})"
-                        rejectedFrames.incrementAndGet()
-                    } else {
-                        hasVoice = true
-                        consecutiveVoiceFrames++
-                        consecutiveRejectedFrames = 0
-                        Log.i(TAG, "🎯 DELTA VOICE: Δ=${String.format("%.1f", deltaEnergy)}dB " +
-                                "(threshold: ${String.format("%.1f", adjustedDeltaThreshold)}dB, " +
-                                "E=${String.format("%.1f", energyDb)}dB, " +
-                                "corr=${String.format("%.2f", correlation)})")
-                    }
-                } else {
-                    if (freqAnalysis.isLikelyRealVoice()) {
-                        hasVoice = true
-                        consecutiveVoiceFrames++
-                        consecutiveRejectedFrames = 0
-                        Log.i(TAG, "🎯 DELTA VOICE: Δ=${String.format("%.1f", deltaEnergy)}dB " +
-                                "(threshold: ${String.format("%.1f", adjustedDeltaThreshold)}dB, " +
-                                "E=${String.format("%.1f", energyDb)}dB)")
-                    } else {
-                        rejectionReason = "Delta sufficient but not voice-like [${freqAnalysis.getDebugInfo()}]"
-                        rejectedFrames.incrementAndGet()
-                    }
-                }
-            }
-            // Energía alta pero sin incremento súbito
-            else if (energyDb > adaptiveThreshold) {
-                if (calibratedBaselineDb > -60f &&
-                    energyDb - calibratedBaselineDb > MAX_ENERGY_ABOVE_BASELINE_DB) {
-                    rejectionReason = "No delta spike (${String.format("%.1f", deltaEnergy)}dB < ${String.format("%.1f", adjustedDeltaThreshold)}dB), too loud vs baseline"
-                    rejectedFrames.incrementAndGet()
-                } else if (freqAnalysis.isLikelyRealVoice()) {
-                    hasVoice = true
-                    consecutiveVoiceFrames++
-                    consecutiveRejectedFrames = 0
-                } else {
-                    rejectionReason = "Above threshold but not voice-like [${freqAnalysis.getDebugInfo()}]"
-                }
-            } else {
-                rejectionReason = "No delta spike (${String.format("%.1f", deltaEnergy)}dB < ${String.format("%.1f", adjustedDeltaThreshold)}dB, avg=${String.format("%.1f", avgRecentEnergy)}dB)"
-            }
-        }
-        // 5.3: Sin playback - usar criterios normales
-        else if (!isPlaybackActive) {
-            if (energyDb > adaptiveThreshold && freqAnalysis.isLikelyRealVoice()) {
-                hasVoice = true
-                consecutiveVoiceFrames++
-                consecutiveRejectedFrames = 0
-            } else if (energyDb <= adaptiveThreshold) {
-                rejectionReason = "No playback: energy=${String.format("%.1f", energyDb)}dB < threshold=${String.format("%.1f", adaptiveThreshold)}dB"
-            } else {
-                rejectionReason = "No playback: not voice-like [${freqAnalysis.getDebugInfo()}]"
-            }
-        }
-
-        lastEnergyDb = energyDb
-
-        if (!hasVoice) {
+        // ✅ 4. DETECCIÓN DE ECO DEL ALTAVOZ
+        if (isPlaybackActive && freqAnalysis.isLikelySpeakerEcho()) {
             consecutiveVoiceFrames = 0
             consecutiveRejectedFrames++
+            rejectedFrames.incrementAndGet()
+            framesProcessed.incrementAndGet()
+            return IVoiceActivityDetector.VadResult(false, 0f, energyDb, timestamp)
         }
 
-        // Requiere frames consecutivos
-        val confirmedVoice = hasVoice && consecutiveVoiceFrames >= MIN_CONSECUTIVE_VOICE_FRAMES
+        // ✅ 5. ACTUALIZAR VENTANA DE ENERGÍA RECIENTE
+        updateRecentEnergyWindow(energyDb)
 
-        // ===== PASO 6: LOGGING CONTROLADO =====
-        val currentTime = System.currentTimeMillis()
-        val shouldLog = (currentTime - lastLogTime) >= LOG_INTERVAL_MS
+        // ✅ 6. CALCULAR DELTA DE ENERGÍA (respecto al promedio reciente)
+        val avgRecentEnergy = calculateAverageRecentEnergy()
+        val deltaEnergy = energyDb - avgRecentEnergy
 
-        if (confirmedVoice) {
-            Log.i(TAG, "✅ VOICE CONFIRMED [frame #${consecutiveVoiceFrames}]")
-            Log.i(TAG, "   Energy: ${String.format("%.1f", energyDb)}dB (threshold: ${String.format("%.1f", adaptiveThreshold)}dB)")
-            Log.i(TAG, "   Playback: $isPlaybackActive | Baseline: ${String.format("%.1f", calibratedBaselineDb)}dB")
-            if (isPlaybackActive) {
-                val avgRecent = calculateAverageRecentEnergy()
-                val delta = energyDb - avgRecent
-                Log.i(TAG, "   Delta: ${String.format("%.1f", delta)}dB above recent average")
+        // ✅ 7. CRITERIOS DE VOZ (usando parámetros ajustados por volumen)
+
+        // Criterio 1: Energía absoluta
+        val hasAbsoluteEnergy = energyDb >= minAbsoluteVoiceEnergyDb
+
+        // Criterio 2: Delta súbito (incremento de energía)
+        val hasDelta = deltaEnergy >= deltaVoiceThresholdDb
+
+        // Criterio 3: ZCR dentro del rango de voz
+        val hasValidZcr = freqAnalysis.zeroCrossingRate <= maxZcrForVoice
+
+        // Criterio 4: Parece voz real (no solo ruido)
+        val seemsLikeVoice = freqAnalysis.isLikelyRealVoice()
+
+        // Criterio 5: Energía por encima del baseline calibrado (con ajuste dinámico)
+        val adjustedBaselineThreshold = if (isPlaybackActive && calibratedBaselineDb > -60f) {
+            calibratedBaselineDb + (deltaVoiceThresholdDb * deltaBaselineAdjustmentFactor)
+        } else {
+            MIN_ENERGY_DB
+        }
+        val aboveBaseline = energyDb >= adjustedBaselineThreshold
+
+        // ✅ DECISIÓN FINAL
+        val hasVoice = hasAbsoluteEnergy &&
+                (hasDelta || aboveBaseline) &&
+                hasValidZcr &&
+                seemsLikeVoice
+
+        // ✅ 8. CONTADOR DE FRAMES CONSECUTIVOS
+        val confirmedVoice = if (hasVoice) {
+            consecutiveVoiceFrames++
+            consecutiveRejectedFrames = 0
+
+            if (consecutiveVoiceFrames >= MIN_CONSECUTIVE_VOICE_FRAMES) {
+                voiceFrames.incrementAndGet()
+                true
+            } else {
+                false
             }
-            Log.i(TAG, "   Analysis: ${freqAnalysis.getDebugInfo()}")
-            voiceFrames.incrementAndGet()
-            lastLogTime = currentTime
-        } else if (shouldLog && rejectionReason.isNotEmpty() && energyDb > -35f) {
-            Log.d(TAG, "❌ REJECTED: $rejectionReason")
-            lastLogTime = currentTime
+        } else {
+            if (consecutiveVoiceFrames > 0) {
+                consecutiveVoiceFrames = 0
+            }
+            consecutiveRejectedFrames++
+            false
         }
 
-        // ===== PASO 7: CALCULAR CONFIANZA =====
-        val confidence = if (confirmedVoice) {
+        // ✅ 9. LOGGING CONDICIONAL
+        val currentTime = System.currentTimeMillis()
+        if (currentTime - lastLogTime >= LOG_INTERVAL_MS) {
+            lastLogTime = currentTime
+
+            Log.d(TAG, "📊 VAD Frame @ ${(currentVolume * 100).toInt()}% volume:")
+            Log.d(TAG, "   Energy: ${String.format("%.1f", energyDb)}dB (need: >= ${String.format("%.1f", minAbsoluteVoiceEnergyDb)}dB)")
+            Log.d(TAG, "   Delta: ${String.format("%.1f", deltaEnergy)}dB (need: >= ${String.format("%.1f", deltaVoiceThresholdDb)}dB)")
+            Log.d(TAG, "   ZCR: ${String.format("%.3f", freqAnalysis.zeroCrossingRate)} (max: ${String.format("%.3f", maxZcrForVoice)})")
+            Log.d(TAG, "   Baseline: ${String.format("%.1f", calibratedBaselineDb)}dB + ${String.format("%.1f", deltaVoiceThresholdDb * deltaBaselineAdjustmentFactor)}dB = ${String.format("%.1f", adjustedBaselineThreshold)}dB")
+            Log.d(TAG, "   Voice: $hasVoice | Confirmed: $confirmedVoice | Consecutive: $consecutiveVoiceFrames")
+
+            if (!hasVoice) {
+                val failures = mutableListOf<String>()
+                if (!hasAbsoluteEnergy) failures.add("Energy")
+                if (!hasDelta && !aboveBaseline) failures.add("Delta/Baseline")
+                if (!hasValidZcr) failures.add("ZCR")
+                if (!seemsLikeVoice) failures.add("Frequency")
+                Log.d(TAG, "   ❌ Failed: ${failures.joinToString(", ")}")
+            }
+        }
+
+        // ✅ 10. CALCULAR CONFIANZA
+        val confidence = if (hasVoice) {
             calculateConfidence(
                 energyDb = energyDb,
-                threshold = adaptiveThreshold,
+                threshold = energyThresholdDb,
                 consecutiveFrames = consecutiveVoiceFrames,
                 freqAnalysis = freqAnalysis,
                 isPlaybackActive = isPlaybackActive,
@@ -525,7 +502,7 @@ class EnergyVoiceActivityDetector : IVoiceActivityDetector {
             confidence += 0.05f
         }
 
-        // ✅ Gran bonus por delta súbito (usando variable configurable)
+        // ✅ Gran bonus por delta súbito (usando variable configurable ajustada por volumen)
         if (isPlaybackActive && deltaEnergy > deltaVoiceThresholdDb) {
             confidence += 0.12f
         }

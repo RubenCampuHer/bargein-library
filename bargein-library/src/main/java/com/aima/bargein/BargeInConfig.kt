@@ -10,7 +10,7 @@ data class BargeInConfig(
     /**
      * Frecuencia de muestreo (Hz)
      */
-    val sampleRate: Int = 16000,
+    val sampleRate: Int = 41000,
 
     /**
      * Modo de agresividad del VAD

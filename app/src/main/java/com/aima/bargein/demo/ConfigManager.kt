@@ -12,33 +12,64 @@ class ConfigManager(
 ) {
     companion object {
         private const val TAG = "ConfigManager"
+
+        // ========= BASELINE (DEFAULT) =========
+        // SENSITIVE = baseline. Toca estos números y el resto de modos
+        // se recalculan automáticamente con offsets.
+        private const val BASE_DELTA_DB = 20f
+        private const val BASE_MIN_ENERGY_DB = -20f
+        private const val BASE_MAX_ZCR = 0.13f
+        private const val BASE_BASELINE_FACTOR = 0.90f
+        private const val BASE_MIN_DURATION_MS = 55L
+        private const val BASE_CONFIDENCE = 0.68f
+        private const val BASE_CALIBRATION_MS = 300L
+        private const val BASE_PRE_DELAY_MS = 350L
+
+        // ========= OFFSETS (relativos al baseline) =========
+        // SUPER_SENSITIVE = más fácil disparar (umbral más bajo, acepta más ZCR, menos duración/confianza)
+        private const val SUPER_OFS_DELTA_DB = -2f
+        private const val SUPER_OFS_MIN_ENERGY_DB = -2f     // más permisivo (más negativo)
+        private const val SUPER_OFS_MAX_ZCR = +0.01f        // acepta algo más de cruce
+        private const val SUPER_OFS_BASELINE_FACTOR = -0.02f
+        private const val SUPER_OFS_MIN_DURATION_MS = -5L
+        private const val SUPER_OFS_CONFIDENCE = -0.06f
+
+        // NORMAL = más conservador (umbral más alto, menos ZCR, más duración/confianza)
+        private const val NORMAL_OFS_DELTA_DB = +2f
+        private const val NORMAL_OFS_MIN_ENERGY_DB = +2f    // exige más energía (menos negativo)
+        private const val NORMAL_OFS_MAX_ZCR = -0.01f
+        private const val NORMAL_OFS_BASELINE_FACTOR = +0.02f
+        private const val NORMAL_OFS_MIN_DURATION_MS = +5L
+        private const val NORMAL_OFS_CONFIDENCE = +0.04f
     }
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("BargeInCustomPrefs", Context.MODE_PRIVATE)
 
+    // Por defecto mantenemos SENSITIVE como modo actual
     var currentMode = SensitivityMode.SENSITIVE
 
-    var customDeltaVoiceThresholdDb = 18f
-    var customMinAbsoluteVoiceEnergyDb = -22f
-    var customMaxZcrForVoice = 0.15f
-    var customDeltaBaselineAdjustmentFactor = 0.85f
-    var customMinVoiceDurationMs = 60L
-    var customVoiceConfidenceThreshold = 0.68f
-    var customCalibrationDurationMs = 300L
-    var customPreDelayMs = 350L
+    // Valores de CUSTOM; inicializamos con baseline para que "Custom = como Sensitive" de fábrica
+    var customDeltaVoiceThresholdDb = BASE_DELTA_DB
+    var customMinAbsoluteVoiceEnergyDb = BASE_MIN_ENERGY_DB
+    var customMaxZcrForVoice = BASE_MAX_ZCR
+    var customDeltaBaselineAdjustmentFactor = BASE_BASELINE_FACTOR
+    var customMinVoiceDurationMs = BASE_MIN_DURATION_MS
+    var customVoiceConfidenceThreshold = BASE_CONFIDENCE
+    var customCalibrationDurationMs = BASE_CALIBRATION_MS
+    var customPreDelayMs = BASE_PRE_DELAY_MS
 
     fun loadSettings() {
-        customDeltaVoiceThresholdDb = prefs.getFloat("deltaVoiceThresholdDb", 18f)
-        customMinAbsoluteVoiceEnergyDb = prefs.getFloat("minAbsoluteVoiceEnergyDb", -22f)
-        customMaxZcrForVoice = prefs.getFloat("maxZcrForVoice", 0.15f)
-        customDeltaBaselineAdjustmentFactor = prefs.getFloat("deltaBaselineAdjustmentFactor", 0.85f)
-        customMinVoiceDurationMs = prefs.getLong("minVoiceDurationMs", 60L)
-        customVoiceConfidenceThreshold = prefs.getFloat("voiceConfidenceThreshold", 0.68f)
-        customCalibrationDurationMs = prefs.getLong("calibrationDurationMs", 300L)
-        customPreDelayMs = prefs.getLong("preDelayMs", 350L)
+        customDeltaVoiceThresholdDb = prefs.getFloat("deltaVoiceThresholdDb", BASE_DELTA_DB)
+        customMinAbsoluteVoiceEnergyDb = prefs.getFloat("minAbsoluteVoiceEnergyDb", BASE_MIN_ENERGY_DB)
+        customMaxZcrForVoice = prefs.getFloat("maxZcrForVoice", BASE_MAX_ZCR)
+        customDeltaBaselineAdjustmentFactor = prefs.getFloat("deltaBaselineAdjustmentFactor", BASE_BASELINE_FACTOR)
+        customMinVoiceDurationMs = prefs.getLong("minVoiceDurationMs", BASE_MIN_DURATION_MS)
+        customVoiceConfidenceThreshold = prefs.getFloat("voiceConfidenceThreshold", BASE_CONFIDENCE)
+        customCalibrationDurationMs = prefs.getLong("calibrationDurationMs", BASE_CALIBRATION_MS)
+        customPreDelayMs = prefs.getLong("preDelayMs", BASE_PRE_DELAY_MS)
 
-        val savedMode = prefs.getString("currentMode", "SENSITIVE") ?: "SENSITIVE"
+        val savedMode = prefs.getString("currentMode", SensitivityMode.SENSITIVE.name) ?: SensitivityMode.SENSITIVE.name
         currentMode = try {
             SensitivityMode.valueOf(savedMode)
         } catch (e: Exception) {
@@ -79,52 +110,90 @@ class ConfigManager(
         Log.i(TAG, "   - Pre-Delay: ${customPreDelayMs}ms")
     }
 
-    fun getConfigForCurrentMode(): BargeInConfig {
-        val config = when (currentMode) {
-            SensitivityMode.SUPER_SENSITIVE -> BargeInConfig(
-                sampleRate = 44100,
-                vadMode = IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE,
-                minVoiceDurationMs = 45,  // ✅ Equilibrado: 40→45ms
-                voiceConfidenceThreshold = 0.62f,  // ✅ Equilibrado: 0.55→0.62
-                deltaVoiceThresholdDb = 18f,  // ✅ Equilibrado: 16→18dB
-                minAbsoluteVoiceEnergyDb = -22f,  // ✅ Equilibrado: -24→-22dB
-                maxZcrForVoice = 0.14f,  // ✅ Equilibrado: 0.16→0.14
-                deltaBaselineAdjustmentFactor = 0.88f  // ✅ CLAVE: 0.80→0.88 (moderado)
-            )
+    // ===== Helpers para derivar cada modo desde el baseline =====
+    private data class ModeParams(
+        val deltaDb: Float,
+        val minEnergyDb: Float,
+        val maxZcr: Float,
+        val baselineFactor: Float,
+        val minDurationMs: Long,
+        val confidence: Float,
+        val vadMode: IVoiceActivityDetector.AggressivenessMode
+    )
 
-            SensitivityMode.SENSITIVE -> BargeInConfig(
-                sampleRate = 44100,
-                vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
-                minVoiceDurationMs = 55,  // ✅ Equilibrado: 48→55ms
-                voiceConfidenceThreshold = 0.68f,  // ✅ Equilibrado: 0.58→0.68
-                deltaVoiceThresholdDb = 20f,  // ✅ Equilibrado: 18→20dB
-                minAbsoluteVoiceEnergyDb = -20f,  // ✅ Equilibrado: -22→-20dB
-                maxZcrForVoice = 0.13f,  // ✅ Equilibrado: 0.15→0.13
-                deltaBaselineAdjustmentFactor = 0.90f  // ✅ CLAVE: 0.85→0.90
-            )
+    private fun derivedFromBaseline(
+        deltaOfs: Float,
+        energyOfs: Float,
+        zcrOfs: Float,
+        factorOfs: Float,
+        minDurOfs: Long,
+        confOfs: Float,
+        vadMode: IVoiceActivityDetector.AggressivenessMode
+    ): ModeParams {
+        return ModeParams(
+            deltaDb = BASE_DELTA_DB + deltaOfs,
+            minEnergyDb = BASE_MIN_ENERGY_DB + energyOfs,
+            maxZcr = (BASE_MAX_ZCR + zcrOfs).coerceIn(0.05f, 0.25f),
+            baselineFactor = (BASE_BASELINE_FACTOR + factorOfs).coerceIn(0.75f, 0.98f),
+            minDurationMs = (BASE_MIN_DURATION_MS + minDurOfs).coerceAtLeast(20L),
+            confidence = (BASE_CONFIDENCE + confOfs).coerceIn(0.40f, 0.95f),
+            vadMode = vadMode
+        )
+    }
 
-            SensitivityMode.NORMAL -> BargeInConfig(
-                sampleRate = 44100,
-                vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
-                minVoiceDurationMs = 60,  // ✅ Equilibrado: 54→60ms
-                voiceConfidenceThreshold = 0.72f,  // ✅ Equilibrado: 0.62→0.72
-                deltaVoiceThresholdDb = 22f,  // ✅ Equilibrado: 20→22dB
-                minAbsoluteVoiceEnergyDb = -18f,  // ✅ Equilibrado: -20→-18dB
-                maxZcrForVoice = 0.12f,  // ✅ Equilibrado: 0.14→0.12
-                deltaBaselineAdjustmentFactor = 0.92f  // ✅ CLAVE: 0.90→0.92
+    private fun paramsFor(mode: SensitivityMode): ModeParams {
+        return when (mode) {
+            SensitivityMode.SENSITIVE -> ModeParams(
+                deltaDb = BASE_DELTA_DB,
+                minEnergyDb = BASE_MIN_ENERGY_DB,
+                maxZcr = BASE_MAX_ZCR,
+                baselineFactor = BASE_BASELINE_FACTOR,
+                minDurationMs = BASE_MIN_DURATION_MS,
+                confidence = BASE_CONFIDENCE,
+                vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE
             )
-
-            SensitivityMode.CUSTOM -> BargeInConfig(
-                sampleRate = 44100,
-                vadMode = IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE,
-                minVoiceDurationMs = customMinVoiceDurationMs,
-                voiceConfidenceThreshold = customVoiceConfidenceThreshold,
-                deltaVoiceThresholdDb = customDeltaVoiceThresholdDb,
-                minAbsoluteVoiceEnergyDb = customMinAbsoluteVoiceEnergyDb,
-                maxZcrForVoice = customMaxZcrForVoice,
-                deltaBaselineAdjustmentFactor = customDeltaBaselineAdjustmentFactor
+            SensitivityMode.SUPER_SENSITIVE -> derivedFromBaseline(
+                SUPER_OFS_DELTA_DB,
+                SUPER_OFS_MIN_ENERGY_DB,
+                SUPER_OFS_MAX_ZCR,
+                SUPER_OFS_BASELINE_FACTOR,
+                SUPER_OFS_MIN_DURATION_MS,
+                SUPER_OFS_CONFIDENCE,
+                IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE
+            )
+            SensitivityMode.NORMAL -> derivedFromBaseline(
+                NORMAL_OFS_DELTA_DB,
+                NORMAL_OFS_MIN_ENERGY_DB,
+                NORMAL_OFS_MAX_ZCR,
+                NORMAL_OFS_BASELINE_FACTOR,
+                NORMAL_OFS_MIN_DURATION_MS,
+                NORMAL_OFS_CONFIDENCE,
+                IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE
+            )
+            SensitivityMode.CUSTOM -> ModeParams(
+                deltaDb = customDeltaVoiceThresholdDb,
+                minEnergyDb = customMinAbsoluteVoiceEnergyDb,
+                maxZcr = customMaxZcrForVoice,
+                baselineFactor = customDeltaBaselineAdjustmentFactor,
+                minDurationMs = customMinVoiceDurationMs,
+                confidence = customVoiceConfidenceThreshold,
+                vadMode = IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE
             )
         }
+    }
+
+    fun getConfigForCurrentMode(): BargeInConfig {
+        val p = paramsFor(currentMode)
+        val config = BargeInConfig(
+            sampleRate = 44100,
+            vadMode = p.vadMode,
+            minVoiceDurationMs = p.minDurationMs,
+            voiceConfidenceThreshold = p.confidence,
+            deltaVoiceThresholdDb = p.deltaDb,
+            minAbsoluteVoiceEnergyDb = p.minEnergyDb,
+            maxZcrForVoice = p.maxZcr,
+            deltaBaselineAdjustmentFactor = p.baselineFactor
+        )
 
         Log.i(TAG, "🔧 Config created for mode: $currentMode")
         Log.i(TAG, "   ============ FINAL CONFIG ============")
@@ -142,69 +211,52 @@ class ConfigManager(
     }
 
     fun getModeDescription(): String {
-        return when (currentMode) {
-            SensitivityMode.SUPER_SENSITIVE -> "Δ=18dB • E=-22dB • ZCR=0.14 • F=0.88"
-            SensitivityMode.SENSITIVE -> "Δ=20dB • E=-20dB • ZCR=0.13 • F=0.90"
-            SensitivityMode.NORMAL -> "Δ=22dB • E=-18dB • ZCR=0.12 • F=0.92"
-            SensitivityMode.CUSTOM -> "Δ=${customDeltaVoiceThresholdDb}dB • E=${customMinAbsoluteVoiceEnergyDb}dB • ZCR=${customMaxZcrForVoice} • F=${customDeltaBaselineAdjustmentFactor}"
-        }
+        val p = paramsFor(currentMode)
+        return "Δ=${p.deltaDb}dB • E=${p.minEnergyDb}dB • ZCR=${"%.2f".format(p.maxZcr)} • F=${"%.2f".format(p.baselineFactor)}"
     }
 
     fun resetToDefaults() {
-        // ✅ Defaults equilibrados (basados en Sensitive)
-        customDeltaVoiceThresholdDb = 20f
-        customMinAbsoluteVoiceEnergyDb = -20f
-        customMaxZcrForVoice = 0.13f
-        customDeltaBaselineAdjustmentFactor = 0.90f
-        customMinVoiceDurationMs = 55L
-        customVoiceConfidenceThreshold = 0.68f
-        customCalibrationDurationMs = 300L
-        customPreDelayMs = 350L
+        // Defaults = baseline (SENSITIVE)
+        customDeltaVoiceThresholdDb = BASE_DELTA_DB
+        customMinAbsoluteVoiceEnergyDb = BASE_MIN_ENERGY_DB
+        customMaxZcrForVoice = BASE_MAX_ZCR
+        customDeltaBaselineAdjustmentFactor = BASE_BASELINE_FACTOR
+        customMinVoiceDurationMs = BASE_MIN_DURATION_MS
+        customVoiceConfidenceThreshold = BASE_CONFIDENCE
+        customCalibrationDurationMs = BASE_CALIBRATION_MS
+        customPreDelayMs = BASE_PRE_DELAY_MS
         saveSettings()
 
-        Log.i(TAG, "🔄 Settings reset to defaults")
+        Log.i(TAG, "🔄 Settings reset to baseline (Sensitive)")
         logCurrentCustomSettings()
     }
 
     fun copyFromSuperSensitive() {
-        customDeltaVoiceThresholdDb = 18f
-        customMinAbsoluteVoiceEnergyDb = -22f
-        customMaxZcrForVoice = 0.14f
-        customDeltaBaselineAdjustmentFactor = 0.88f
-        customMinVoiceDurationMs = 45L
-        customVoiceConfidenceThreshold = 0.62f
-        customCalibrationDurationMs = 300L
-        customPreDelayMs = 350L
-
-        Log.i(TAG, "📋 Copied Super Sensitive to Custom")
-        logCurrentCustomSettings()
+        val p = paramsFor(SensitivityMode.SUPER_SENSITIVE)
+        applyParamsToCustom(p, "Super Sensitive")
     }
 
     fun copyFromSensitive() {
-        customDeltaVoiceThresholdDb = 20f
-        customMinAbsoluteVoiceEnergyDb = -20f
-        customMaxZcrForVoice = 0.13f
-        customDeltaBaselineAdjustmentFactor = 0.90f
-        customMinVoiceDurationMs = 55L
-        customVoiceConfidenceThreshold = 0.68f
-        customCalibrationDurationMs = 300L
-        customPreDelayMs = 350L
-
-        Log.i(TAG, "📋 Copied Sensitive to Custom")
-        logCurrentCustomSettings()
+        val p = paramsFor(SensitivityMode.SENSITIVE)
+        applyParamsToCustom(p, "Sensitive (Baseline)")
     }
 
     fun copyFromNormal() {
-        customDeltaVoiceThresholdDb = 22f
-        customMinAbsoluteVoiceEnergyDb = -18f
-        customMaxZcrForVoice = 0.12f
-        customDeltaBaselineAdjustmentFactor = 0.92f
-        customMinVoiceDurationMs = 60L
-        customVoiceConfidenceThreshold = 0.72f
-        customCalibrationDurationMs = 300L
-        customPreDelayMs = 350L
+        val p = paramsFor(SensitivityMode.NORMAL)
+        applyParamsToCustom(p, "Normal")
+    }
 
-        Log.i(TAG, "📋 Copied Normal to Custom")
+    private fun applyParamsToCustom(p: ModeParams, label: String) {
+        customDeltaVoiceThresholdDb = p.deltaDb
+        customMinAbsoluteVoiceEnergyDb = p.minEnergyDb
+        customMaxZcrForVoice = p.maxZcr
+        customDeltaBaselineAdjustmentFactor = p.baselineFactor
+        customMinVoiceDurationMs = p.minDurationMs
+        customVoiceConfidenceThreshold = p.confidence
+        customCalibrationDurationMs = BASE_CALIBRATION_MS
+        customPreDelayMs = BASE_PRE_DELAY_MS
+
+        Log.i(TAG, "📋 Copied $label to Custom")
         logCurrentCustomSettings()
     }
 

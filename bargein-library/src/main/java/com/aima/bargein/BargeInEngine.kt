@@ -2,6 +2,7 @@ package com.aima.bargein
 
 import android.Manifest
 import android.content.Context
+import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -32,13 +33,22 @@ class BargeInEngine(
     companion object {
         private const val TAG = "BargeInEngine"
     }
-
+   val HARD_BLOCK_VOLUME = 0.65f
     private lateinit var audioCapture: AudioCapture
     private lateinit var audioPlayback: AudioPlayback
     private lateinit var audioFocusManager: AudioFocusManager
 
     private var aec: IAcousticEchoCanceler? = null
     private var vad: IVoiceActivityDetector? = null
+
+    // ✅ NUEVO: Modo Anti-Autointerferencia Manual
+    private var audioManager: AudioManager? = null
+    @Volatile
+    private var currentVolume: Float = 0.5f
+    @Volatile
+    private var antiAutoInterferenceEnabled: Boolean = false  // ✅ OFF por defecto
+    private var volumeMonitorRunnable: Runnable? = null
+    private val VOLUME_CHECK_INTERVAL_MS = 100L
 
     private val state = AtomicReference(BargeInState.IDLE)
     private val isListening = AtomicBoolean(false)
@@ -52,7 +62,6 @@ class BargeInEngine(
     private val engineScope = CoroutineScope(AudioThreadConfig.audioDispatcher + SupervisorJob())
     private val handler = Handler(Looper.getMainLooper())
 
-    // ✅ Contador de frames
     private var frameCounter = 0L
     private val _userInterruption = MutableSharedFlow<BargeInEvent>()
     val userInterruption = _userInterruption.asSharedFlow()
@@ -68,6 +77,31 @@ class BargeInEngine(
         Log.i(TAG, "📊 minVoiceFrames = $minVoiceFrames (${config.minVoiceDurationMs}ms @ 44.1kHz)")
     }
 
+    /**
+     * ✅ NUEVO: Activar/Desactivar modo Anti-Autointerferencia
+     */
+    fun setAntiAutoInterferenceMode(enabled: Boolean) {
+        antiAutoInterferenceEnabled = enabled
+
+        if (enabled) {
+            Log.i(TAG, "🛡️ ANTI-AUTOINTERFERENCIA ACTIVADO")
+            Log.i(TAG, "   → A partir de 50% de volumen: IMPOSIBLE autointerferirse")
+        } else {
+            Log.i(TAG, "🔓 Anti-autointerferencia DESACTIVADO")
+            Log.i(TAG, "   → Comportamiento normal del VAD")
+        }
+
+        // Aplicar cambio inmediatamente si estamos escuchando
+        if (isListening.get()) {
+            updateVolumeLevel()
+        }
+    }
+
+    /**
+     * ✅ NUEVO: Obtener estado actual del modo
+     */
+    fun isAntiAutoInterferenceModeEnabled(): Boolean = antiAutoInterferenceEnabled
+
     fun initialize(context: Context) {
         Log.d(TAG, "🔧 Initializing BargeInEngine @ 44.1kHz...")
 
@@ -81,6 +115,13 @@ class BargeInEngine(
         }
 
         try {
+            audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (audioManager != null) {
+                Log.i(TAG, "✅ AudioManager initialized for volume monitoring")
+            } else {
+                Log.w(TAG, "⚠️ AudioManager not available - anti-interference disabled")
+            }
+
             initializeAudioComponents(context)
             Log.d(TAG, "✅ Audio components initialized @ 44.1kHz")
 
@@ -149,6 +190,106 @@ class BargeInEngine(
         }
     }
 
+    private fun startVolumeMonitoring() {
+        stopVolumeMonitoring()
+
+        volumeMonitorRunnable = object : Runnable {
+            override fun run() {
+                updateVolumeLevel()
+                handler.postDelayed(this, VOLUME_CHECK_INTERVAL_MS)
+            }
+        }
+
+        handler.post(volumeMonitorRunnable!!)
+        Log.d(TAG, "🎚️ Volume monitoring started")
+    }
+
+    private fun stopVolumeMonitoring() {
+        volumeMonitorRunnable?.let {
+            handler.removeCallbacks(it)
+            volumeMonitorRunnable = null
+        }
+        Log.d(TAG, "🎚️ Volume monitoring stopped")
+    }
+
+    /**
+     * ✅ MODIFICADO: Aplica ajuste EXTREMO si modo anti-autointerferencia activo
+     */
+    private fun updateVolumeLevel() {
+        audioManager?.let { am ->
+            val streamType = AudioManager.STREAM_MUSIC
+            val currentVol = am.getStreamVolume(streamType)
+            val maxVol = am.getStreamMaxVolume(streamType)
+
+            if (maxVol > 0) {
+                val newVolume = currentVol.toFloat() / maxVol.toFloat()
+
+                if (kotlin.math.abs(newVolume - currentVolume) > 0.01f) {
+                    currentVolume = newVolume
+
+                    // ✅ NUEVO: Lógica diferente según modo
+                    if (antiAutoInterferenceEnabled) {
+                        applyAntiAutoInterferenceAdjustment()
+                    } else {
+                        applyNormalAdjustment()
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * ✅ NUEVO: Ajuste EXTREMO para evitar autointerferencia
+     * A partir de HARD_BLOCK_VOLUME% → IMPOSIBLE detectar
+     * SOLO APLICA CUANDO HAY PLAYBACK ACTIVO
+     */
+    private fun applyAntiAutoInterferenceAdjustment() {
+        val vadEnergy = vad as? EnergyVoiceActivityDetector ?: return
+
+        // ✅ CRÍTICO: Solo aplicar ajuste extremo si hay playback activo
+        if (isPlaying.get() && currentVolume >= HARD_BLOCK_VOLUME) {
+            // Umbrales imposibles mientras el altavoz esté a partir del 50%
+            val extremeScale = 9.99f  // <<— mucho más alto que 3.0
+            vadEnergy.setVolumeAdjustmentParameters(
+                enabled = true,
+                scaleMultiplier = extremeScale
+            )
+
+            if (frameCounter % 100 == 0L) {
+                Log.i(TAG, "🛡️ ANTI-AUTO (duro) @ ${(currentVolume * 100).toInt()}% | Scale=${String.format("%.2f", extremeScale)}x")
+            }
+        } else {
+            // Sin playback o volumen bajo: sin ajuste especial
+            vadEnergy.setVolumeAdjustmentParameters(
+                enabled = false,
+                scaleMultiplier = 1.0f
+            )
+        }
+    }
+
+
+    /**
+     * ✅ NUEVO: Ajuste normal (más suave, solo si volumen muy alto)
+     */
+    private fun applyNormalAdjustment() {
+        val vadEnergy = vad as? EnergyVoiceActivityDetector ?: return
+
+        if (currentVolume > 0.65f) {
+            val volumeExcess = (currentVolume - 0.65f) / 0.35f
+            val normalScale = 1.0f + (volumeExcess * 0.64f)  // 1.0→1.64
+
+            vadEnergy.setVolumeAdjustmentParameters(
+                enabled = true,
+                scaleMultiplier = normalScale
+            )
+        } else {
+            vadEnergy.setVolumeAdjustmentParameters(
+                enabled = false,
+                scaleMultiplier = 1.0f
+            )
+        }
+    }
+
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun startListening() {
         if (state.get() == BargeInState.LISTENING) {
@@ -172,13 +313,19 @@ class BargeInEngine(
             consecutiveVoiceFrames = 0
             voiceDetectionStartTime = 0
             bargeInTriggered.set(false)
-            frameCounter = 0 // ✅ Reset contador
+            frameCounter = 0
+
+            startVolumeMonitoring()
 
             updateState(BargeInState.LISTENING)
             Log.i(TAG, "🎤 Listening started @ 44.1kHz")
 
+            if (antiAutoInterferenceEnabled) {
+                Log.i(TAG, "🛡️ Anti-Autointerferencia: ACTIVO")
+            }
+
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error starting listening")
+            Log.e(TAG, "❌ Error starting listening", e)
             val error = BargeInError(
                 ErrorCode.AUDIO_CAPTURE_FAILED,
                 "Failed to start audio capture: ${e.message}",
@@ -197,6 +344,8 @@ class BargeInEngine(
 
         Log.i(TAG, "🛑 Stopping listening...")
 
+        stopVolumeMonitoring()
+
         audioCapture.stopCapture()
         audioFocusManager.abandonAudioFocus()
         isListening.set(false)
@@ -207,83 +356,69 @@ class BargeInEngine(
         Log.i(TAG, "✅ Listening stopped")
     }
 
-    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
-    fun playAudio(audioStream: InputStream) {
+    fun playAudio(stream: InputStream) {
         if (isPlaying.get()) {
-            Log.w(TAG, "⚠️ Already playing audio, stopping previous")
-            stopPlayback()
+            Log.w(TAG, "⚠️ Already playing")
+            return
         }
 
         try {
-            if (!isListening.get()) {
-                Log.i(TAG, "🎤 Starting listening before playback")
-                startListening()
-            }
-
-            bargeInTriggered.set(false)
-            consecutiveVoiceFrames = 0
-            voiceDetectionStartTime = 0
-
             isPlaying.set(true)
+            (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(true)
 
-            Log.i(TAG, "🎵 Starting audio playback @ 44.1kHz")
-            Log.i(TAG, "⏳ Waiting 350ms for AudioTrack to start before calibration...")
+            updateVolumeLevel()
 
-            audioPlayback.playWav(audioStream)
-
-            handler.postDelayed({
-                if (isPlaying.get()) {
-                    (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(true)
-                    Log.i(TAG, "🎯 VAD notified: playback ACTIVE (calibrating NOW with real audio...)")
-                }
-            }, 350)
+            audioPlayback.playWav(stream)
+            Log.i(TAG, "▶️ Audio playback started")
 
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error playing audio")
+            Log.e(TAG, "❌ Error starting playback", e)
             isPlaying.set(false)
-
+            (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
             val error = BargeInError(
                 ErrorCode.AUDIO_PLAYBACK_FAILED,
-                "Failed to play audio: ${e.message}",
+                "Failed to start audio playback: ${e.message}",
                 e
             )
             notifyError(error)
+            throw e
         }
+    }
+
+    fun stopAudioPlayback(): Long {
+        if (!isPlaying.get()) {
+            Log.d(TAG, "ℹ️ Not playing, nothing to stop")
+            return System.nanoTime()
+        }
+
+        val stopTimestamp = audioPlayback.stopImmediately()
+        isPlaying.set(false)
+        (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
+        updateVolumeLevel() // ✅ Desactivar ajuste extremo
+
+        Log.i(TAG, "⏸️ Audio playback stopped at ${stopTimestamp}ms")
+        return stopTimestamp * 1_000_000
     }
 
     private fun stopPlayback(): Long {
-        if (!isPlaying.get()) {
-            Log.d(TAG, "ℹ️ No active playback to stop")
-            return 0
-        }
-
-        Log.i(TAG, "⏸️ Stopping playback...")
-
-        handler.removeCallbacksAndMessages(null)
-
-        val stopTimestamp = System.nanoTime()
-        audioPlayback.stopImmediately()
-        isPlaying.set(false)
-
-        (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
-        Log.i(TAG, "🔕 VAD notified: playback INACTIVE")
-
-        Log.i(TAG, "✅ Playback stopped")
-        return stopTimestamp
-    }
-
-    fun stopAudioPlayback() {
-        stopPlayback()
+        return stopAudioPlayback()
     }
 
     fun release() {
-        Log.d(TAG, "🔧 Releasing BargeInEngine...")
-        handler.removeCallbacksAndMessages(null)
-        stopListening()
-        cleanup()
-        updateState(BargeInState.IDLE)
-        engineScope.cancel()
-        Log.i(TAG, "✅ BargeInEngine released")
+        try {
+            Log.i(TAG, "🔧 Releasing BargeInEngine...")
+
+            stopListening()
+            stopAudioPlayback()
+            stopVolumeMonitoring()
+
+            cleanup()
+            engineScope.cancel()
+
+            Log.i(TAG, "✅ BargeInEngine released successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error releasing BargeInEngine", e)
+        }
     }
 
     fun getMetrics(): BargeInMetrics {
@@ -292,7 +427,9 @@ class BargeInEngine(
             vadMetrics = vad?.getMetrics(),
             state = state.get(),
             isListening = isListening.get(),
-            isPlaying = isPlaying.get()
+            isPlaying = isPlaying.get(),
+            currentVolume = currentVolume,
+            antiAutoInterferenceEnabled = antiAutoInterferenceEnabled
         )
     }
 
@@ -310,11 +447,13 @@ class BargeInEngine(
             onPlaybackComplete = {
                 isPlaying.set(false)
                 (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
+                updateVolumeLevel() // ✅ Desactivar ajuste extremo
                 Log.d(TAG, "✅ Playback completed normally")
             },
             onPlaybackStopped = {
                 isPlaying.set(false)
                 (vad as? EnergyVoiceActivityDetector)?.setPlaybackActive(false)
+                updateVolumeLevel() // ✅ Desactivar ajuste extremo
                 Log.d(TAG, "🛑 Playback stopped by barge-in")
             },
             onPlaybackBuffer = { farEndBuffer ->
@@ -332,8 +471,21 @@ class BargeInEngine(
 
                 val vadResult = vad?.processFrame(audioData, audioData.size) ?: return@launch
 
-                // ✅ LOGGING DETALLADO - Solo cada 20 frames para no saturar
+                // ✅ Incrementar frameCounter SIEMPRE, antes de cualquier lógica
                 frameCounter++
+
+                // ✅ Hard-block: bloquear detección cuando volumen alto
+                if (antiAutoInterferenceEnabled && isPlaying.get() && currentVolume >= HARD_BLOCK_VOLUME) {
+                    if (frameCounter % 50L == 0L) {
+                        Log.i(TAG, "🛡️ Hard-block activo (@${(currentVolume * 100).toInt()}% volumen) → NO barge-in")
+                    }
+                    // Resetear contadores solo si hay acumulación
+                    if (consecutiveVoiceFrames > 0) {
+                        consecutiveVoiceFrames = 0
+                        voiceDetectionStartTime = 0
+                    }
+                    return@launch
+                }
                 if (frameCounter % 20 == 0L) {
                     Log.d("", "═══════════════════════════════════════")
                     Log.d(TAG, "🎙️ Frame #$frameCounter @ ${timestamp}ms")
@@ -345,8 +497,11 @@ class BargeInEngine(
                     Log.d(TAG, "   baselineDb: %.1f".format(vadResult.baselineDb))
                     Log.d(TAG, "   consecutiveVoiceFrames: $consecutiveVoiceFrames / $minVoiceFrames")
                     Log.d(TAG, "   isPlaying: ${isPlaying.get()}")
+                    Log.d(TAG, "   currentVolume: ${(currentVolume * 100).toInt()}%")
+                    if (antiAutoInterferenceEnabled) {
+                        Log.d(TAG, "   🛡️ Anti-Autointerferencia: ON")
+                    }
 
-                    // Diagnóstico de por qué no se detecta
                     if (!vadResult.hasVoice) {
                         Log.w(TAG, "   ❌ NO VOICE - Failing criteria:")
                         val failures = mutableListOf<String>()
@@ -371,7 +526,6 @@ class BargeInEngine(
                     Log.d(TAG, "═══════════════════════════════════════")
                 }
 
-                // Log SIEMPRE cuando detecta voz (sin importar el contador)
                 if (vadResult.hasVoice && vadResult.confidence >= config.voiceConfidenceThreshold) {
                     Log.i(TAG, "🎉 VOICE FRAME DETECTED!")
                     Log.i(TAG, "   Confidence: %.3f".format(vadResult.confidence))
@@ -386,7 +540,7 @@ class BargeInEngine(
                 }
 
             } catch (e: Exception) {
-                Log.e(TAG, "❌ Error processing audio frame")
+                Log.e(TAG, "❌ Error processing audio frame", e)
             }
         }
     }
@@ -414,12 +568,6 @@ class BargeInEngine(
         if (bargeInTriggered.getAndSet(true)) {
             return
         }
-
-//        if (!isPlaying.get()) {
-//            Log.w(TAG, "⚠️ Not playing, ignoring barge-in trigger")
-//            bargeInTriggered.set(false)
-//            return
-//        }
 
         Log.i(TAG, "🚨 BARGE-IN TRIGGERED! " +
                 "frames=$consecutiveVoiceFrames, " +
@@ -451,7 +599,7 @@ class BargeInEngine(
             }
             Log.i(TAG, "✅ Listener notified of barge-in")
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error notifying listener")
+            Log.e(TAG, "❌ Error notifying listener", e)
         }
 
         Log.i(TAG, "🎉 Barge-in completed: latency=${String.format("%.1f", latencyMs)}ms, " +
@@ -486,7 +634,7 @@ class BargeInEngine(
             vad?.release()
             audioFocusManager.abandonAudioFocus()
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error during cleanup")
+            Log.e(TAG, "❌ Error during cleanup", e)
         }
     }
 }
@@ -496,5 +644,7 @@ data class BargeInMetrics(
     val vadMetrics: IVoiceActivityDetector.VadMetrics?,
     val state: BargeInState,
     val isListening: Boolean,
-    val isPlaying: Boolean
+    val isPlaying: Boolean,
+    val currentVolume: Float = 0.5f,
+    val antiAutoInterferenceEnabled: Boolean = false
 )

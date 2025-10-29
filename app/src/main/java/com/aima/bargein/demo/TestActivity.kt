@@ -19,7 +19,7 @@ import java.io.File
 
 class TestActivity : AppCompatActivity() {
 
-    private lateinit var engine: BargeInEngine
+    lateinit var engine: BargeInEngine // ✅ Público para acceso desde UIManager
     private lateinit var uiManager: UIManager
     lateinit var configManager: ConfigManager
     private lateinit var presetManager: PresetManager
@@ -30,6 +30,7 @@ class TestActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private var wavFile: File? = null
     private var isTestRunning = false
+    private var antiAutoEnabled: Boolean = false
 
     companion object {
         private const val TAG = "TestActivity"
@@ -46,6 +47,10 @@ class TestActivity : AppCompatActivity() {
         uiManager.setupUI()
         checkPermissions()
     }
+    fun isEngineInitialized(): Boolean = this::engine.isInitialized
+
+    fun getEngineOrNull(): BargeInEngine? =
+        if (this::engine.isInitialized) engine else null
 
     private fun observeEngine() {
         lifecycleScope.launch {
@@ -95,6 +100,13 @@ class TestActivity : AppCompatActivity() {
             }
         }
     }
+    fun setAntiAutoEnabled(enabled: Boolean) {
+        antiAutoEnabled = enabled
+        getEngineOrNull()?.setAntiAutoInterferenceMode(enabled)
+    }
+
+    // Para que UI pueda leerlo sin tocar el backing field
+    fun getAntiAutoEnabled(): Boolean = antiAutoEnabled
     fun openTutorial() {
         tutorialDialog.show()
     }
@@ -131,6 +143,7 @@ class TestActivity : AppCompatActivity() {
             wavFile = audioManager.prepareAudioFile()
             initializeEngine()
             observeEngine()
+            engine.setAntiAutoInterferenceMode(antiAutoEnabled)
             uiManager.showReady(configManager.currentMode, presetManager.getPresetCount())
             uiManager.enablePlayButton(true)
         } catch (e: Exception) {
@@ -143,44 +156,42 @@ class TestActivity : AppCompatActivity() {
         val config = configManager.getConfigForCurrentMode()
         engine = BargeInEngine(config)
         engine.initialize(applicationContext)
+        engine.setAntiAutoInterferenceMode(antiAutoEnabled)
         Log.i(TAG, "✅ Engine initialized with mode: ${configManager.currentMode}")
     }
 
     fun changeSensitivityMode(newMode: SensitivityMode) {
-        if (!::engine.isInitialized) {
-            Log.w(TAG, "Engine not initialized yet")
-            return
-        }
-
+        if (!::engine.isInitialized) return
         if (isTestRunning) {
             uiManager.showError("⚠️ Detén el test antes de cambiar el modo")
             return
         }
 
-        Log.i(TAG, "🔄 Changing mode from ${configManager.currentMode} to $newMode")
+        // ✅ Guardar estado actual del Anti-Auto ANTES de release
+        val wasAntiAuto = antiAutoEnabled
 
         configManager.currentMode = newMode
         configManager.saveSettings()
 
         try {
             engine.release()
-            Log.i(TAG, "   Engine released")
-
             Thread.sleep(100)
-
             initializeEngine()
             observeEngine()
-            Log.i(TAG, "   Engine reinitialized")
+
+            // ✅ Restaurar y sincronizar estado Anti-Auto
+            antiAutoEnabled = wasAntiAuto
+            engine.setAntiAutoInterferenceMode(wasAntiAuto)
+            uiManager.updateAntiAutoUI(wasAntiAuto)
 
             uiManager.updateModeButtons()
             uiManager.showModeChanged(newMode, configManager.getModeDescription())
 
-            Log.i(TAG, "✅ Mode changed successfully to: $newMode")
         } catch (e: Exception) {
-            Log.e(TAG, "Error changing mode", e)
             uiManager.showError("Error cambiando modo: ${e.message}")
         }
     }
+
 
     fun applyCustomSettings() {
         if (!::engine.isInitialized) {
@@ -206,10 +217,18 @@ class TestActivity : AppCompatActivity() {
 
             configManager.saveSettings()
 
+            // ✅ Guardar estado Anti-Auto ANTES de release
+            val wasAntiAuto = antiAutoEnabled
+
             engine.release()
             Thread.sleep(100)
             initializeEngine()
             observeEngine()
+
+            // ✅ Restaurar y sincronizar estado Anti-Auto
+            antiAutoEnabled = wasAntiAuto
+            engine.setAntiAutoInterferenceMode(wasAntiAuto)
+            uiManager.updateAntiAutoUI(wasAntiAuto)
 
             uiManager.showModeChanged(SensitivityMode.CUSTOM, configManager.getModeDescription())
 

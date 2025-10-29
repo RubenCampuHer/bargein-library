@@ -3,6 +3,7 @@ package com.aima.bargein.demo
 import android.graphics.Color
 import android.view.Gravity
 import android.widget.*
+import com.aima.bargein.BargeInEngine
 import com.aima.bargein.BargeInEvent
 import com.aima.bargein.BargeInMetrics
 import com.aima.bargein.BargeInState
@@ -20,6 +21,7 @@ class UIManager(
     private lateinit var diagnosticText: TextView  // ✅ NUEVO
     private lateinit var btnPlayTest: Button
     private lateinit var btnStopTest: Button
+    private lateinit var btnAntiInterference: Button  // ✅ NUEVO: Anti-autointerferencia
 
     private val modeButtons = mutableMapOf<SensitivityMode, Button>()
 
@@ -281,6 +283,26 @@ class UIManager(
 
             addView(btnPlayTest)
             addView(btnStopTest)
+
+            // ✅ NUEVO: Botón Anti-Autointerferencia
+            btnAntiInterference = Button(activity).apply {
+                text = "🛡️ Anti-Auto: OFF"
+                textSize = 14f
+                setBackgroundColor(Color.parseColor("#9E9E9E"))
+                setTextColor(Color.WHITE)
+                setPadding(20, 30, 20, 30)
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    setMargins(0, 12, 0, 0)
+                }
+                setOnClickListener {
+                    toggleAntiInterferenceMode()
+                }
+            }
+
+            addView(btnAntiInterference)
         }
     }
 
@@ -356,14 +378,46 @@ class UIManager(
     private fun updateDiagnostics(metrics: BargeInMetrics, currentDb: Float, confidence: Float) {
         val config = configManager.getConfigForCurrentMode()
 
+        // Obtener información de volumen y ajuste
+        val currentVolume = metrics.currentVolume
+        val volumePercent = (currentVolume * 100).toInt()
+        val antiAutoEnabled = metrics.antiAutoInterferenceEnabled
+        val isPlaying = metrics.isPlaying
+
+        // Calcular el scaleMultiplier efectivo
+        val effectiveScale = when {
+            !antiAutoEnabled && currentVolume <= 0.65f -> 1.0f
+            !antiAutoEnabled && currentVolume > 0.65f -> {
+                val volumeExcess = (currentVolume - 0.65f) / 0.35f
+                1.0f + (volumeExcess * 0.64f)
+            }
+            antiAutoEnabled && isPlaying && currentVolume >= 0.50f -> 9.99f
+            else -> 1.0f
+        }
+
+        val hasVolumeAdjustment = effectiveScale > 1.0f
+
+        // Calcular umbrales efectivos (después del ajuste de volumen)
+        val effectiveDeltaThreshold = if (hasVolumeAdjustment) {
+            config.deltaVoiceThresholdDb * effectiveScale
+        } else {
+            config.deltaVoiceThresholdDb
+        }
+
+        val effectiveEnergyThreshold = if (hasVolumeAdjustment) {
+            config.minAbsoluteVoiceEnergyDb + (effectiveScale - 1.0f) * 5.0f
+        } else {
+            config.minAbsoluteVoiceEnergyDb
+        }
+
         // Simular valores actuales (en producción vendrían del engine)
         val currentEnergy = currentDb
         val currentZcr = 0.15f // Esto debería venir del engine
         val currentDelta = currentDb + 20f // Simulación de delta vs baseline
 
-        // Evaluar cada criterio
-        val deltaCheck = currentDelta >= config.deltaVoiceThresholdDb
-        val energyCheck = currentEnergy >= config.minAbsoluteVoiceEnergyDb
+        // Evaluar cada criterio con umbrales efectivos
+        val deltaCheck = currentDelta >= effectiveDeltaThreshold
+        val energyCheck = currentEnergy >= effectiveEnergyThreshold
         val zcrCheck = currentZcr <= config.maxZcrForVoice
         val confidenceCheck = confidence >= config.voiceConfidenceThreshold
 
@@ -375,14 +429,35 @@ class UIManager(
             appendLine("═══════════════════════════════")
             appendLine()
 
+            // ✅ NUEVO: Mostrar información de volumen y ajuste
+            appendLine("🔊 VOLUMEN DEL SISTEMA: $volumePercent%")
+            if (antiAutoEnabled) {
+                appendLine("🛡️ Anti-Auto: ON ${if (isPlaying) "(ACTIVO)" else "(STANDBY)"}")
+            }
+            if (hasVolumeAdjustment) {
+                appendLine("⚠️ AJUSTE ACTIVO: ${String.format("%.2fx", effectiveScale)}")
+                appendLine("   → Umbrales incrementados")
+            } else {
+                appendLine("✅ Sin ajuste de volumen")
+            }
+            appendLine()
+
             appendLine("${if (deltaCheck) "✅" else "❌"} Delta vs Baseline:")
             appendLine("   Actual: %.1f dB".format(currentDelta))
-            appendLine("   Requerido: ≥ %.1f dB".format(config.deltaVoiceThresholdDb))
+            if (hasVolumeAdjustment) {
+                appendLine("   Base: %.1f dB → Efectivo: %.1f dB".format(config.deltaVoiceThresholdDb, effectiveDeltaThreshold))
+            } else {
+                appendLine("   Requerido: ≥ %.1f dB".format(config.deltaVoiceThresholdDb))
+            }
             appendLine()
 
             appendLine("${if (energyCheck) "✅" else "❌"} Energía Absoluta:")
             appendLine("   Actual: %.1f dB".format(currentEnergy))
-            appendLine("   Requerido: ≥ %.1f dB".format(config.minAbsoluteVoiceEnergyDb))
+            if (hasVolumeAdjustment) {
+                appendLine("   Base: %.1f dB → Efectivo: %.1f dB".format(config.minAbsoluteVoiceEnergyDb, effectiveEnergyThreshold))
+            } else {
+                appendLine("   Requerido: ≥ %.1f dB".format(config.minAbsoluteVoiceEnergyDb))
+            }
             appendLine()
 
             appendLine("${if (zcrCheck) "✅" else "❌"} Zero Crossing Rate:")
@@ -396,7 +471,7 @@ class UIManager(
             appendLine()
 
             appendLine("───────────────────────────────")
-            appendLine("⚙️ Configuración actual:")
+            appendLine("⚙️ Configuración:")
             appendLine("   Modo: ${configManager.currentMode}")
             appendLine("   Factor ajuste: %.2f".format(config.deltaBaselineAdjustmentFactor))
             appendLine("   Duración mín: ${config.minVoiceDurationMs}ms")
@@ -404,9 +479,13 @@ class UIManager(
 
         diagnosticText.text = diagnostic
 
-        // Cambiar color de fondo según resultado
+        // Cambiar color de fondo según resultado y ajuste
         diagnosticText.setBackgroundColor(
-            if (allPass) Color.parseColor("#C8E6C9") else Color.parseColor("#FFCCBC")
+            when {
+                allPass -> Color.parseColor("#C8E6C9") // Verde: voz detectada
+                hasVolumeAdjustment -> Color.parseColor("#FFF9C4") // Amarillo: ajuste activo
+                else -> Color.parseColor("#FFCCBC") // Rojo: voz rechazada
+            }
         )
     }
 
@@ -518,6 +597,17 @@ class UIManager(
             SensitivityMode.CUSTOM -> "⚙️ CUSTOM"
         }
     }
+    fun updateAntiAutoUI(enabled: Boolean) {
+        if (!::btnAntiInterference.isInitialized) return
+
+        if (enabled) {
+            btnAntiInterference.text = "🛡️ Anti-Auto: ON"
+            btnAntiInterference.setBackgroundColor(android.graphics.Color.parseColor("#4CAF50"))
+        } else {
+            btnAntiInterference.text = "🛡️ Anti-Auto: OFF"
+            btnAntiInterference.setBackgroundColor(android.graphics.Color.parseColor("#9E9E9E"))
+        }
+    }
     fun showPlaybackCompleted() {
         statusText.text = """
         ✅ Audio completado
@@ -531,5 +621,47 @@ class UIManager(
 
         diagnosticText.text = "Audio completado - sin barge-in detectado"
         diagnosticText.setBackgroundColor(Color.parseColor("#E3F2FD"))
+    }
+    private fun refreshAntiAutoButton(on: Boolean) {
+        if (on) {
+            btnAntiInterference.text = "🛡️ Anti-Auto: ON"
+            btnAntiInterference.setBackgroundColor(Color.parseColor("#4CAF50"))
+        } else {
+            btnAntiInterference.text = "🛡️ Anti-Auto: OFF"
+            btnAntiInterference.setBackgroundColor(Color.parseColor("#9E9E9E"))
+        }
+    }
+    private fun toggleAntiInterferenceMode() {
+        val engine = activity.getEngineOrNull()
+        if (engine == null) {
+            Toast.makeText(activity, "⚠️ Engine no inicializado", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val newState = !activity.getAntiAutoEnabled()
+        // 👉 Persistimos en la Activity y aplicamos al engine
+        activity.setAntiAutoEnabled(newState)
+        refreshAntiAutoButton(newState)
+
+        if (newState) {
+            androidx.appcompat.app.AlertDialog.Builder(activity)
+                .setTitle("🛡️ Anti-Autointerferencia ACTIVADO")
+                .setMessage(
+                    "Desde 50% de volumen (durante reproducción):\n\n" +
+                            "✅ NUNCA se parará sola\n" +
+                            "⚠️ Será MÁS DIFÍCIL interrumpir con tu voz\n\n" +
+                            "Umbrales se multiplican por ~10x cuando:\n" +
+                            "• Volumen ≥50%\n" +
+                            "• Audio reproduciéndose\n\n" +
+                            "Recomendado cuando:\n" +
+                            "• Se está parando sola constantemente\n" +
+                            "• Necesitas volumen alto sin interrupciones"
+                )
+                .setPositiveButton("Entendido", null)
+                .show()
+        } else {
+            Toast.makeText(activity, "⚠️ Anti-Auto DESACTIVADO → Comportamiento normal", Toast.LENGTH_SHORT).show()
+        }
+
+        android.util.Log.i("UIManager", "🛡️ Anti-Auto: ${if (newState) "ON" else "OFF"}")
     }
 }

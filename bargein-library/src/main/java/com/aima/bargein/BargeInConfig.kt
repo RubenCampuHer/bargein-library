@@ -1,46 +1,102 @@
 package com.aima.bargein
 
-import com.aima.bargein.aec.AcousticEchoCancelerFactory
+import com.aima.bargein.aec.IAcousticEchoCanceler
 import com.aima.bargein.vad.IVoiceActivityDetector
-import com.aima.bargein.vad.VoiceActivityDetectorFactory
 
+/**
+ * Configuración del motor de Barge-In
+ */
 data class BargeInConfig(
-    val sampleRate: Int = 16000,
-    val vadMode: IVoiceActivityDetector.AggressivenessMode =
-        IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
-    val aecPreference: AcousticEchoCancelerFactory.Preference =
-        AcousticEchoCancelerFactory.Preference.AUTO,
-    val vadPreference: VoiceActivityDetectorFactory.Preference =
-        VoiceActivityDetectorFactory.Preference.AUTO,
-    val minVoiceDurationMs: Long = 200,
-    val voiceConfidenceThreshold: Float = 0.7f,
-    val enableMetrics: Boolean = true
+    /**
+     * Frecuencia de muestreo (Hz)
+     */
+    val sampleRate: Int = 41000,
+
+    /**
+     * Modo de agresividad del VAD
+     */
+    val vadMode: IVoiceActivityDetector.AggressivenessMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
+
+    /**
+     * Duración mínima de voz para detectar barge-in (ms)
+     */
+    val minVoiceDurationMs: Long = 100,
+
+    /**
+     * Umbral de confianza para detectar voz (0.0 - 1.0)
+     */
+    val voiceConfidenceThreshold: Float = 0.60f,
+
+    /**
+     * Preferencia de tipo de AEC
+     */
+    val aecPreference: IAcousticEchoCanceler.Type = IAcousticEchoCanceler.Type.ANDROID_BUILTIN,
+
+    /**
+     * Preferencia de tipo de VAD
+     */
+    val vadPreference: IVoiceActivityDetector.Type = IVoiceActivityDetector.Type.ENERGY,
+
+    // ✅ NUEVO: Parámetros específicos del VAD por modo
+    /**
+     * Umbral de incremento de energía para detectar voz (dB)
+     */
+    val deltaVoiceThresholdDb: Float = 15f,
+
+    /**
+     * Energía mínima absoluta para considerar voz (dB)
+     */
+    val minAbsoluteVoiceEnergyDb: Float = -25f,
+
+    /**
+     * ZCR máximo permitido para voz (0.0 - 1.0)
+     */
+    val maxZcrForVoice: Float = 0.18f,
+
+    /**
+     * Factor de ajuste del delta según baseline (0.0 - 1.0)
+     */
+    val deltaBaselineAdjustmentFactor: Float = 0.6f
 ) {
-    init {
-        require(sampleRate in listOf(8000, 16000, 32000, 48000)) {
-            "Sample rate must be 8000, 16000, 32000 or 48000"
-        }
-        require(minVoiceDurationMs > 0) {
-            "Min voice duration must be positive"
-        }
-        require(voiceConfidenceThreshold in 0f..1f) {
-            "Voice confidence threshold must be between 0.0 and 1.0"
-        }
-    }
-
     companion object {
-        val DEFAULT = BargeInConfig()
+        /**
+         * Configuración por defecto
+         */
+        val DEFAULT = BargeInConfig(
+            sampleRate = 44100,
+            vadMode = IVoiceActivityDetector.AggressivenessMode.AGGRESSIVE,
+            minVoiceDurationMs = 36,
+            voiceConfidenceThreshold = 0.62f,
+            deltaVoiceThresholdDb = 14.6f,
+            minAbsoluteVoiceEnergyDb = -16.5f,
+            maxZcrForVoice = 0.14f,
+            deltaBaselineAdjustmentFactor = 0.98f
+        )
 
+        /**
+         * Configuración de baja latencia (más sensible)
+         */
+        val LOW_LATENCY = BargeInConfig(
+            vadMode = IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE,
+            minVoiceDurationMs = 150,
+            voiceConfidenceThreshold = 0.50f
+        )
+
+        /**
+         * Configuración de alta calidad (menos falsos positivos)
+         */
         val HIGH_QUALITY = BargeInConfig(
             vadMode = IVoiceActivityDetector.AggressivenessMode.QUALITY,
             minVoiceDurationMs = 300,
-            voiceConfidenceThreshold = 0.8f
+            voiceConfidenceThreshold = 0.75f
         )
+    }
 
-        val AGGRESSIVE = BargeInConfig(
-            vadMode = IVoiceActivityDetector.AggressivenessMode.VERY_AGGRESSIVE,
-            minVoiceDurationMs = 150,
-            voiceConfidenceThreshold = 0.6f
-        )
+    init {
+        require(sampleRate > 0) { "Sample rate must be positive" }
+        require(minVoiceDurationMs > 0) { "Min voice duration must be positive" }
+        require(voiceConfidenceThreshold in 0.0f..1.0f) {
+            "Voice confidence threshold must be between 0.0 and 1.0"
+        }
     }
 }

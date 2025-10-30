@@ -14,38 +14,49 @@ import com.aima.bargein.BargeInEngine
 import com.aima.bargein.BargeInError
 import com.aima.bargein.BargeInEvent
 import com.aima.bargein.BargeInState
+import com.aima.bargein.PythonVadConfig
+import com.aima.bargein.PythonVadPreset
 import kotlinx.coroutines.launch
 import java.io.File
 
-class TestActivity : AppCompatActivity() {
+/**
+ * Activity para testing del método Python de barge-in
+ * Usa: Leak Compensation + Rise Factor + RMS Threshold
+ */
+class PythonMethodActivity : AppCompatActivity() {
 
-    lateinit var engine: BargeInEngine // ✅ Público para acceso desde UIManager
-    private lateinit var uiManager: UIManager
-    lateinit var configManager: ConfigManager
-    private lateinit var presetManager: PresetManager
+    lateinit var engine: BargeInEngine
+    private lateinit var uiManager: PythonMethodUIManager
+    private lateinit var configManager: PythonMethodConfigManager
     private lateinit var audioManager: AudioManager
-
 
     private val handler = Handler(Looper.getMainLooper())
     private var wavFile: File? = null
     private var isTestRunning = false
-    private var antiAutoEnabled: Boolean = false
+    private var isCalibrating = false
 
     companion object {
-        private const val TAG = "TestActivity"
-        private const val PERMISSION_REQUEST_CODE = 100
+        private const val TAG = "PythonMethodActivity"
+        private const val PERMISSION_REQUEST_CODE = 101
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        Log.i(TAG, "🚀 TestActivity started @ 44.1kHz")
+        Log.i(TAG, "🐍 PythonMethodActivity started")
 
         initializeManagers()
         configManager.loadSettings()
         uiManager.setupUI()
         checkPermissions()
     }
+
+    private fun initializeManagers() {
+        configManager = PythonMethodConfigManager(this)
+        audioManager = AudioManager(this)
+        uiManager = PythonMethodUIManager(this, configManager, audioManager)
+    }
+
     fun isEngineInitialized(): Boolean = this::engine.isInitialized
 
     fun getEngineOrNull(): BargeInEngine? =
@@ -71,44 +82,26 @@ class TestActivity : AppCompatActivity() {
         }
     }
 
-    private fun initializeManagers() {
-        presetManager = PresetManager(this)
-        configManager = ConfigManager(this, presetManager)
-        audioManager = AudioManager(this)
-
-        uiManager = UIManager(this, configManager, presetManager, audioManager)
-    }
-
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         configManager.saveSettings()
         outState.putBoolean("isTestRunning", isTestRunning)
-        outState.putString("currentMode", configManager.currentMode.name)
+        outState.putString("currentPreset", configManager.currentPreset.name)
     }
 
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
         super.onRestoreInstanceState(savedInstanceState)
         configManager.loadSettings()
-        savedInstanceState.getString("currentMode")?.let {
+        savedInstanceState.getString("currentPreset")?.let {
             try {
-                configManager.currentMode = SensitivityMode.valueOf(it)
-                uiManager.updateModeButtons()
+                configManager.currentPreset = PythonVadPreset.valueOf(it)
+                uiManager.updatePresetButtons()
             } catch (e: Exception) {
-                Log.e(TAG, "Error restoring mode", e)
+                Log.e(TAG, "Error restoring preset", e)
             }
         }
     }
-    fun setAntiAutoEnabled(enabled: Boolean) {
-        antiAutoEnabled = enabled
-        getEngineOrNull()?.setAntiAutoInterferenceMode(enabled)
-    }
 
-    // Para que UI pueda leerlo sin tocar el backing field
-    fun getAntiAutoEnabled(): Boolean = antiAutoEnabled
-    fun openPythonMethod() {
-        val intent = android.content.Intent(this, PythonMethodActivity::class.java)
-        startActivity(intent)
-    }
     private fun checkPermissions() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
@@ -142,8 +135,7 @@ class TestActivity : AppCompatActivity() {
             wavFile = audioManager.prepareAudioFile()
             initializeEngine()
             observeEngine()
-            engine.setAntiAutoInterferenceMode(antiAutoEnabled)
-            uiManager.showReady(configManager.currentMode, presetManager.getPresetCount())
+            uiManager.showReady(configManager.currentPreset)
             uiManager.enablePlayButton(true)
         } catch (e: Exception) {
             Log.e(TAG, "Error in initialization", e)
@@ -152,24 +144,23 @@ class TestActivity : AppCompatActivity() {
     }
 
     private fun initializeEngine() {
-        val config = configManager.getConfigForCurrentMode()
-        engine = BargeInEngine(config)
+        val config = configManager.getConfigForCurrentPreset()
+        // TODO: Crear BargeInEngine que acepte PythonVadConfig
+        // Por ahora usamos el engine existente con configuración convertida
+        val androidConfig = configManager.convertToAndroidConfig(config)
+        engine = BargeInEngine(androidConfig)
         engine.initialize(applicationContext)
-        engine.setAntiAutoInterferenceMode(antiAutoEnabled)
-        Log.i(TAG, "✅ Engine initialized with mode: ${configManager.currentMode}")
+        Log.i(TAG, "✅ Engine initialized with preset: ${configManager.currentPreset}")
     }
 
-    fun changeSensitivityMode(newMode: SensitivityMode) {
+    fun changePreset(newPreset: PythonVadPreset) {
         if (!::engine.isInitialized) return
         if (isTestRunning) {
-            uiManager.showError("⚠️ Detén el test antes de cambiar el modo")
+            uiManager.showError("⚠️ Detén el test antes de cambiar el preset")
             return
         }
 
-        // ✅ Guardar estado actual del Anti-Auto ANTES de release
-        val wasAntiAuto = antiAutoEnabled
-
-        configManager.currentMode = newMode
+        configManager.currentPreset = newPreset
         configManager.saveSettings()
 
         try {
@@ -178,19 +169,13 @@ class TestActivity : AppCompatActivity() {
             initializeEngine()
             observeEngine()
 
-            // ✅ Restaurar y sincronizar estado Anti-Auto
-            antiAutoEnabled = wasAntiAuto
-            engine.setAntiAutoInterferenceMode(wasAntiAuto)
-            uiManager.updateAntiAutoUI(wasAntiAuto)
-
-            uiManager.updateModeButtons()
-            uiManager.showModeChanged(newMode, configManager.getModeDescription())
+            uiManager.updatePresetButtons()
+            uiManager.showPresetChanged(newPreset, configManager.getPresetDescription())
 
         } catch (e: Exception) {
-            uiManager.showError("Error cambiando modo: ${e.message}")
+            uiManager.showError("Error cambiando preset: ${e.message}")
         }
     }
-
 
     fun applyCustomSettings() {
         if (!::engine.isInitialized) {
@@ -203,33 +188,25 @@ class TestActivity : AppCompatActivity() {
             return
         }
 
-        if (configManager.currentMode != SensitivityMode.CUSTOM) {
+        if (configManager.currentPreset != PythonVadPreset.CUSTOM) {
             Log.w(TAG, "Not in CUSTOM mode, skipping apply")
             return
         }
 
         try {
             Log.i(TAG, "🔧 Applying custom settings changes...")
-            Log.i(TAG, "   Delta: ${configManager.customDeltaVoiceThresholdDb}dB")
-            Log.i(TAG, "   Energy: ${configManager.customMinAbsoluteVoiceEnergyDb}dB")
-            Log.i(TAG, "   Factor: ${configManager.customDeltaBaselineAdjustmentFactor}")
+            Log.i(TAG, "   RMS Threshold: ${configManager.customRmsThreshold}")
+            Log.i(TAG, "   Rise Factor: ${configManager.customRiseFactor}")
+            Log.i(TAG, "   Leak K: ${configManager.customLeakK}")
 
             configManager.saveSettings()
-
-            // ✅ Guardar estado Anti-Auto ANTES de release
-            val wasAntiAuto = antiAutoEnabled
 
             engine.release()
             Thread.sleep(100)
             initializeEngine()
             observeEngine()
 
-            // ✅ Restaurar y sincronizar estado Anti-Auto
-            antiAutoEnabled = wasAntiAuto
-            engine.setAntiAutoInterferenceMode(wasAntiAuto)
-            uiManager.updateAntiAutoUI(wasAntiAuto)
-
-            uiManager.showModeChanged(SensitivityMode.CUSTOM, configManager.getModeDescription())
+            uiManager.showPresetChanged(PythonVadPreset.CUSTOM, configManager.getPresetDescription())
 
             Log.i(TAG, "✅ Custom settings applied successfully")
         } catch (e: Exception) {
@@ -244,9 +221,13 @@ class TestActivity : AppCompatActivity() {
 
         try {
             isTestRunning = true
+
+            // TODO: Implementar calibración de leak compensation
+            // Por ahora usamos la configuración directamente
+
             engine.startListening()
 
-            uiManager.showTestRunning(configManager.currentMode, configManager.getModeDescription())
+            uiManager.showTestRunning(configManager.currentPreset, configManager.getPresetDescription())
             uiManager.enablePlayButton(false)
             uiManager.enableStopButton(true)
 
@@ -256,7 +237,7 @@ class TestActivity : AppCompatActivity() {
                 wavFile?.inputStream()?.let { engine.playAudio(it) }
             }, 100)
 
-            Log.i(TAG, "▶️ Test started with mode: ${configManager.currentMode}")
+            Log.i(TAG, "▶️ Test started with preset: ${configManager.currentPreset}")
         } catch (e: Exception) {
             isTestRunning = false
             uiManager.showError("Error iniciando test: ${e.message}")
@@ -297,12 +278,10 @@ class TestActivity : AppCompatActivity() {
         handler.post(updateRunnable)
     }
 
-    // ✅ NUEVO: Callback cuando el audio termina normalmente
     fun onPlaybackComplete() {
         runOnUiThread {
             Log.i(TAG, "🎵 Playback completed normally")
 
-            // Detener todo
             engine.stopListening()
             handler.removeCallbacksAndMessages(null)
 
@@ -351,6 +330,6 @@ class TestActivity : AppCompatActivity() {
         if (::engine.isInitialized) {
             engine.release()
         }
-        Log.i(TAG, "🔧 TestActivity destroyed")
+        Log.i(TAG, "🔧 PythonMethodActivity destroyed")
     }
 }

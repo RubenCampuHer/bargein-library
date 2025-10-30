@@ -19,7 +19,11 @@ interface IVoiceActivityDetector {
         val hasVoice: Boolean,
         val confidence: Float,
         val energyDb: Float,
-        val timestamp: Long
+        val timestamp: Long,
+        // ✅ NUEVOS campos necesarios para diagnóstico
+        val deltaDb: Float = 0f,
+        val zcr: Float = 0f,
+        val baselineDb: Float = 0f
     )
 
     fun initialize(

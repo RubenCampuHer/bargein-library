@@ -4,6 +4,7 @@ interface IAcousticEchoCanceler {
 
     enum class Type {
         ANDROID_NATIVE,
+        ANDROID_BUILTIN,
         WEBRTC,
         NONE
     }

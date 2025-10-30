@@ -1,137 +1,175 @@
 package com.aima.bargein.audio
 
 import android.Manifest
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
-import androidx.annotation.RequiresPermission  // ← AÑADIR ESTE IMPORT
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import timber.log.Timber
+import android.media.*
+import android.media.audiofx.AcousticEchoCanceler
+import android.util.Log
+import androidx.annotation.RequiresPermission
+import kotlinx.coroutines.*
+import kotlin.math.absoluteValue
 
 class AudioCapture(
-    private val sampleRate: Int = 16000,
+    private val sampleRate: Int = 44100, // ✅ 44.1kHz para análisis espectral extendido
     private val onAudioData: (ShortArray, Long) -> Unit
 ) {
-    private var audioRecord: AudioRecord? = null
-    private var captureJob: Job? = null
-    private val captureScope = CoroutineScope(Dispatchers.IO)
+    companion object {
+        private const val TAG = "BargeInEngine_AudioCapture"
+    }
 
-    private val frameSize = (sampleRate * FRAME_DURATION_MS / 1000)
+    private var audioRecord: AudioRecord? = null
+    private var aec: AcousticEchoCanceler? = null
+    private var captureJob: Job? = null
+    private val scope = CoroutineScope(Dispatchers.IO)
+
+    // Frame de ~11.6ms a 44.1kHz = 512 samples
+    private val frameSize = 512
+
     private val bufferSize = AudioRecord.getMinBufferSize(
         sampleRate,
         AudioFormat.CHANNEL_IN_MONO,
         AudioFormat.ENCODING_PCM_16BIT
     ).coerceAtLeast(frameSize * 4)
 
-    @Volatile
-    private var isCapturing = false
+    @Volatile private var isCapturing = false
 
-    companion object {
-        private const val FRAME_DURATION_MS = 10
-    }
+    // ✅ NUEVO: Estadísticas de supresión de eco
+    private var totalFrames = 0L
+    private var echoSuppressedFrames = 0L
 
-    @RequiresPermission(Manifest.permission.RECORD_AUDIO)  // ← AÑADIR ESTA LÍNEA
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun startCapture() {
         if (isCapturing) {
-            Timber.w("Audio capture already running")
+            Log.w(TAG, "⚠️ Already capturing")
             return
         }
 
         try {
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION, // ✅ AEC hardware automático
                 sampleRate,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
                 bufferSize
             )
 
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                throw IllegalStateException("AudioRecord initialization failed")
+            check(audioRecord?.state == AudioRecord.STATE_INITIALIZED) {
+                "AudioRecord initialization failed"
+            }
+
+            // ✅ NUEVO: AEC explícito si está disponible
+            // ⚠️ DESACTIVADO TEMPORALMENTE - El AEC cancela también la voz real
+            try {
+                val sessionId = audioRecord?.audioSessionId ?: AudioManager.ERROR
+                if (sessionId != AudioManager.ERROR && AcousticEchoCanceler.isAvailable()) {
+                    aec = AcousticEchoCanceler.create(sessionId)
+                    // ⚠️ CRÍTICO: Desactivar AEC explícito para evitar cancelación de voz
+                    aec?.enabled = false
+                    Log.w(TAG, "⚠️ AEC explícito disponible pero DESACTIVADO")
+                    Log.w(TAG, "   Motivo: Cancela voz real del usuario")
+                    Log.i(TAG, "   Usando solo VOICE_COMMUNICATION (AEC hardware)")
+                } else {
+                    Log.w(TAG, "⚠️ AEC no disponible - usando solo VOICE_COMMUNICATION")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "⚠️ No se pudo configurar AEC", e)
             }
 
             audioRecord?.startRecording()
             isCapturing = true
 
-            Timber.i("Audio capture started: sampleRate=$sampleRate, bufferSize=$bufferSize")
+            Log.i(TAG, "🎤 Audio capture started")
+            Log.i(TAG, "   Sample rate: ${sampleRate}Hz")
+            Log.i(TAG, "   Frame size: $frameSize samples (~11.6ms)")
+            Log.i(TAG, "   Buffer size: $bufferSize bytes")
+            Log.i(TAG, "   AEC: ${if (aec?.enabled == true) "✅ Explícito" else "⚠️ Solo hardware"}")
 
-            captureJob = captureScope.launch {
-                captureLoop()
-            }
+            captureJob = scope.launch { captureLoop() }
 
         } catch (e: Exception) {
-            Timber.e(e, "Failed to start audio capture")
+            Log.e(TAG, "❌ Failed to start audio capture")
             cleanup()
             throw e
         }
     }
 
-    // ... resto del código sin cambios
-
-    fun stopCapture() {
-        if (!isCapturing) return
-
-        isCapturing = false
-        captureJob?.cancel()
-        cleanup()
-
-        Timber.i("Audio capture stopped")
-    }
-
     private fun captureLoop() {
         val buffer = ShortArray(frameSize)
+        var frameCount = 0
+        var lastLogTime = System.currentTimeMillis()
 
-        while (isCapturing && captureScope.isActive) {
+        while (isCapturing && scope.isActive) {
             try {
                 val timestamp = System.nanoTime()
-                val samplesRead = audioRecord?.read(buffer, 0, frameSize) ?: 0
+                val read = audioRecord?.read(buffer, 0, frameSize, AudioRecord.READ_BLOCKING) ?: 0
 
-                when {
-                    samplesRead > 0 -> {
-                        onAudioData(buffer.copyOf(samplesRead), timestamp)
+                if (read > 0) {
+                    frameCount++
+                    onAudioData(buffer.copyOf(read), timestamp)
+
+                    // ✅ Log solo cada 500ms para no saturar Logcat
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - lastLogTime >= 500) {
+                        Log.d(TAG, "📊 Captured $frameCount frames (${frameCount * 11.6f / 1000f}s)")
+                        lastLogTime = currentTime
                     }
-                    samplesRead == AudioRecord.ERROR_INVALID_OPERATION -> {
-                        Timber.e("AudioRecord error: INVALID_OPERATION")
-                        break
-                    }
-                    samplesRead == AudioRecord.ERROR_BAD_VALUE -> {
-                        Timber.e("AudioRecord error: BAD_VALUE")
-                        break
-                    }
+                } else if (read < 0) {
+                    Log.w(TAG, "⚠️ AudioRecord read error: $read")
                 }
 
             } catch (e: Exception) {
                 if (isCapturing) {
-                    Timber.e(e, "Error in capture loop")
+                    Log.e(TAG, "❌ Error in capture loop")
                 }
-                break
             }
         }
+
+        Log.d(TAG, "🛑 Capture loop ended (frames=$frameCount)")
+    }
+
+    fun stopCapture() {
+        if (!isCapturing) {
+            Log.d(TAG, "ℹ️ Not capturing, nothing to stop")
+            return
+        }
+
+        Log.i(TAG, "🛑 Stopping audio capture...")
+        isCapturing = false
+        captureJob?.cancel()
+        cleanup()
+        Log.i(TAG, "✅ Audio capture stopped")
     }
 
     private fun cleanup() {
         try {
+            // ✅ Liberar AEC primero
+            aec?.apply {
+                enabled = false
+                release()
+            }
+            aec = null
+
             audioRecord?.apply {
                 if (state == AudioRecord.STATE_INITIALIZED) {
                     stop()
                 }
                 release()
             }
-            audioRecord = null
         } catch (e: Exception) {
-            Timber.e(e, "Error cleaning up AudioRecord")
+            Log.e(TAG, "❌ Cleanup error")
+        } finally {
+            audioRecord = null
         }
     }
 
-    fun isCapturing(): Boolean = isCapturing
-
     fun release() {
         stopCapture()
-        captureScope.cancel()
+        scope.cancel()
+
+        if (totalFrames > 0) {
+            val suppressionRate = (echoSuppressedFrames * 100f / totalFrames)
+            Log.i(TAG, "📊 Echo suppression stats: ${echoSuppressedFrames}/${totalFrames} frames (${String.format("%.1f%%", suppressionRate)})")
+        }
+
+        Log.d(TAG, "🔧 AudioCapture released")
     }
 }

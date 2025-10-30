@@ -64,10 +64,12 @@ class UIManager(
                 gravity = Gravity.CENTER
                 setPadding(0, 0, 0, 24)
             })
+
+            // ✅ NUEVO: Botón para método Python
             addView(Button(activity).apply {
-                text = "📚 Abrir Tutorial de Diagnóstico"
+                text = "🐍 Método Python (Leak + Rise)"
                 textSize = 13f
-                setBackgroundColor(Color.parseColor("#FF9800"))
+                setBackgroundColor(Color.parseColor("#2196F3"))
                 setTextColor(Color.WHITE)
                 setPadding(16, 20, 16, 20)
                 layoutParams = LinearLayout.LayoutParams(
@@ -78,7 +80,7 @@ class UIManager(
                     setMargins(0, 0, 0, 20)
                 }
                 setOnClickListener {
-                    activity.openTutorial()
+                    activity.openPythonMethod()
                 }
             })
         }
